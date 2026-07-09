@@ -16,7 +16,10 @@ from typing import Generator, Optional
 
 # ── 数据库路径 ──────────────────────────────────────────────────────
 def _db_dir() -> Path:
-    base = Path(__file__).resolve().parent / "data"
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent / "data"
+    else:
+        base = Path(__file__).resolve().parent / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -25,8 +28,10 @@ DB_PATH = _db_dir() / "account_book.db"
 # ── 建表 ────────────────────────────────────────────────────────────
 def init_db() -> None:
     """初始化数据库：建表 + 索引，幂等操作。"""
-    with _get_connection() as conn:
+    with get_connection() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS transactions (
                 id          TEXT PRIMARY KEY,
@@ -54,9 +59,15 @@ def init_db() -> None:
 
 # ── 连接管理 ────────────────────────────────────────────────────────
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    return conn
+    try:
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        return conn
+    except sqlite3.OperationalError as e:
+        raise sqlite3.OperationalError(
+            f"无法打开数据库文件 {DB_PATH}: {e}\n请检查文件权限或关闭其他正在运行的实例。"
+        ) from e
 
+@contextmanager
 def get_connection() -> Generator[sqlite3.Connection, None, None]:
     """上下文管理器，自动 commit/close。"""
     conn = _get_connection()

@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.spec
@@ -7,6 +7,11 @@ __pycache__/
 dist/
 build/
 
+# Data files
+data/
+*.xlsx
+*.csv
+
 # IDE
 .vscode/
 .idea/
@@ -14,4 +19,3 @@ build/
 # OS
 .DS_Store
 Thumbs.db
-%SystemDrive%/
