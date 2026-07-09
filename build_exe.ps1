@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$AppName = "账单合并分析器"
+$AppName = "CodexAccountBook"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
@@ -21,9 +21,8 @@ python -m PyInstaller `
   --windowed `
   --name "$AppName" `
   --add-data "app.py;." `
-  --collect-all streamlit `
-  --collect-all plotly `
-  --collect-all altair `
+  --add-data "db.py;." `
+  --add-data "parser.py;." `
   --copy-metadata streamlit `
   --copy-metadata pandas `
   --copy-metadata plotly `
