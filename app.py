@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import time
 
 import db
 import parser as p
@@ -230,15 +231,39 @@ def page_transactions() -> None:
     df_display["金额"] = df_display["金额"].apply(lambda x: f"¥{x:,.2f}")
     df_display = df_display[["时间", "来源", "收支", "金额", "分类", "说明", "对方", "支付方式"]]
 
-    st.dataframe(df_display, use_container_width=True, hide_index=True, height=600)
+    # 删除计数器 — 用于重置表格选择状态
+    if "tx_del_counter" not in st.session_state:
+        st.session_state["tx_del_counter"] = 0
 
-    if st.button("🗑️ 删除选中行", type="secondary"):
-        st.warning("点击每条记录旁的删除按钮（待实现）")
+    # 带行选择的数据表格（动态 key，删除后重建）
+    selection_event = st.dataframe(
+        df_display,
+        use_container_width=True,
+        hide_index=True,
+        height=600,
+        selection_mode="multi-row",
+        on_select="rerun",
+        key=f"tx_table_{st.session_state.tx_del_counter}",
+    )
 
+    # 获取选中的行索引
+    selected_rows = getattr(getattr(selection_event, "selection", None), "rows", [])
 
-# ══════════════════════════════════════════════════════════════════════════
-# 页面：导入账单
-# ══════════════════════════════════════════════════════════════════════════
+    # 选中提示
+    if selected_rows:
+        st.caption(f"已选中 {len(selected_rows)} 行")
+
+    # 删除按钮 — 始终可见，无勾选时禁用
+    if st.button("🗑️ 删除选中行", type="primary", disabled=len(selected_rows) == 0):
+        deleted = 0
+        for idx in sorted(selected_rows, reverse=True):
+            if idx < len(rows):
+                if db.delete_transaction(rows[idx]["id"]):
+                    deleted += 1
+        if deleted > 0:
+            st.session_state["tx_del_counter"] += 1
+            st.rerun()
+
 
 def page_import() -> None:
     st.title("📥 导入账单")
