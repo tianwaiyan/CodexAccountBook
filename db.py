@@ -61,6 +61,7 @@ def init_db() -> None:
 def _get_connection() -> sqlite3.Connection:
     try:
         conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
         return conn
     except sqlite3.OperationalError as e:
         raise sqlite3.OperationalError(
