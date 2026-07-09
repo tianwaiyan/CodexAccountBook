@@ -28,7 +28,6 @@ DB_PATH = _db_dir() / "account_book.db"
 def init_db() -> None:
     """初始化数据库：建表 + 索引，幂等操作。"""
     with _get_connection() as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS transactions (
@@ -57,15 +56,12 @@ def init_db() -> None:
 
 # ── 连接管理 ────────────────────────────────────────────────────────
 def _get_connection() -> sqlite3.Connection:
-    """创建连接，启用 WAL 和外键，配置为能接受 Row factory。"""
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        conn.execute("PRAGMA journal_mode=DELETE")
     return conn
-
-
-@contextmanager
 def get_connection() -> Generator[sqlite3.Connection, None, None]:
     """上下文管理器，自动 commit/close。"""
     conn = _get_connection()
