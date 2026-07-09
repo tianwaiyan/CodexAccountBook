@@ -15,8 +15,9 @@ from typing import Generator, Optional
 
 # ── 数据库路径 ──────────────────────────────────────────────────────
 def _db_dir() -> Path:
-    """用户级数据目录，确保打包后与非打包环境一致。"""
-    base = Path.home() / ".codex_account_book"
+    """应用目录下的 data 文件夹，避免用户目录权限问题。"""
+    import os
+    base = Path(os.path.dirname(os.path.abspath(__file__))) / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
