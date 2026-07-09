@@ -9,21 +9,18 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
+import os, sys
 from pathlib import Path
 from typing import Generator, Optional
 
 
 # ── 数据库路径 ──────────────────────────────────────────────────────
 def _db_dir() -> Path:
-    """应用目录下的 data 文件夹，避免用户目录权限问题。"""
-    import os
-    base = Path(os.path.dirname(os.path.abspath(__file__))) / "data"
+    base = Path(__file__).resolve().parent / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
-
 DB_PATH = _db_dir() / "account_book.db"
-
 
 # ── 建表 ────────────────────────────────────────────────────────────
 def init_db() -> None:
