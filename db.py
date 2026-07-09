@@ -58,11 +58,8 @@ def init_db() -> None:
 # ── 连接管理 ────────────────────────────────────────────────────────
 def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except sqlite3.OperationalError:
-        conn.execute("PRAGMA journal_mode=DELETE")
     return conn
+
 def get_connection() -> Generator[sqlite3.Connection, None, None]:
     """上下文管理器，自动 commit/close。"""
     conn = _get_connection()
