@@ -252,11 +252,30 @@ def _normalize_trade_type(raw_type: str) -> str:
 # Alipay auto-exclude: 余额宝 earnings, 花呗 auto-repay, bank scheduled transfer
 ALIPAY_EXCLUDE_RULES = [
     lambda r: ("余额宝" in str(r.get("description", "")) and "收益" in str(r.get("description", ""))),
-    lambda r: ("余额宝" in str(r.get("category_raw", "")) and "收益" in str(r.get("category_raw", ""))),
+    lambda r: ("余额宝" in str(r.get("category", "")) and "收益" in str(r.get("category", ""))),
     lambda r: ("花呗" in str(r.get("counterparty", "")) and "还款" in str(r.get("description", ""))),
     lambda r: ("花呗" in str(r.get("description", "")) and "还款" in str(r.get("description", ""))),
     lambda r: ("定时转入" in str(r.get("description", ""))),
 ]
+
+
+WECHAT_EXCLUDE_RULES = [
+    lambda row: (
+        "转入零钱通" in str(row.get("description", ""))
+        or "转入零钱通" in str(row.get("category", ""))
+    ),
+]
+
+
+def _exclude_wechat_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    kept = []
+    excluded_rows = []
+    for row in rows:
+        if any(rule(row) for rule in WECHAT_EXCLUDE_RULES):
+            excluded_rows.append(row)
+        else:
+            kept.append(row)
+    return kept, excluded_rows
 
 def _exclude_alipay_rows(rows):
     kept = []
@@ -309,11 +328,13 @@ def _df_to_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict]]:
+def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict], list[dict]]:
     # Read uploaded file bytes into BytesIO for robust handling with Streamlit
     import io
     file_bytes = file.read()
     buf = io.BytesIO(file_bytes)
+    if hasattr(file, "name"):
+        buf.name = file.name
 
     if platform == "支付宝":
         df = parse_alipay(buf)
@@ -327,6 +348,8 @@ def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict
     excluded_rows = []
     if platform == "支付宝":
         rows, excluded_rows = _exclude_alipay_rows(rows)
+    elif platform == "微信":
+        rows, excluded_rows = _exclude_wechat_rows(rows)
     inserted, skipped = db.insert_transactions(rows)
     preview = rows[:5]
     return inserted, skipped, excluded_rows, preview
