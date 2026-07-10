@@ -286,18 +286,22 @@ def page_import() -> None:
 
         if alipay_file is not None:
             try:
-                inserted, skipped, preview = p.import_csv_to_db(alipay_file, "支付宝")
+                inserted, skipped, excluded_rows, preview = p.import_csv_to_db(alipay_file, "支付宝")
                 total_inserted += inserted
                 total_skipped += skipped
-                st.success(f"支付宝：新增 {inserted} 条，跳过 {skipped} 条（重复）")
+                st.success(f"支付宝：新增 {inserted} 条，跳过 {skipped} 条（重复），剔除 {len(excluded_rows)} 条（自动过滤）")
                 with st.expander("预览支付宝导入记录"):
                     st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True)
+                if excluded_rows:
+                    with st.expander(f"支付宝自动过滤记录 ({len(excluded_rows)} 条)"):
+                        st.dataframe(pd.DataFrame(excluded_rows), use_container_width=True, hide_index=True)
+                        st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
             except Exception as exc:
                 st.error(f"支付宝导入失败：{exc}")
 
         if wechat_file is not None:
             try:
-                inserted, skipped, preview = p.import_csv_to_db(wechat_file, "微信")
+                inserted, skipped, excluded_rows, preview = p.import_csv_to_db(wechat_file, "微信")
                 total_inserted += inserted
                 total_skipped += skipped
                 st.success(f"微信：新增 {inserted} 条，跳过 {skipped} 条（重复）")

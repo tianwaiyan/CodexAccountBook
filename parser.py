@@ -248,6 +248,27 @@ def _normalize_trade_type(raw_type: str) -> str:
 
 
 # ── 导入流程 ─────────────────────────────────────────────────────────
+
+# Alipay auto-exclude: 余额宝 earnings, 花呗 auto-repay, bank scheduled transfer
+ALIPAY_EXCLUDE_RULES = [
+    lambda r: ("余额宝" in str(r.get("description", "")) and "收益" in str(r.get("description", ""))),
+    lambda r: ("余额宝" in str(r.get("category_raw", "")) and "收益" in str(r.get("category_raw", ""))),
+    lambda r: ("花呗" in str(r.get("counterparty", "")) and "还款" in str(r.get("description", ""))),
+    lambda r: ("花呗" in str(r.get("description", "")) and "还款" in str(r.get("description", ""))),
+    lambda r: ("定时转入" in str(r.get("description", ""))),
+]
+
+def _exclude_alipay_rows(rows):
+    kept = []
+    excluded_rows = []
+    for row in rows:
+        if any(rule(row) for rule in ALIPAY_EXCLUDE_RULES):
+            excluded_rows.append(row)
+        else:
+            kept.append(row)
+    return kept, excluded_rows
+
+
 def _df_to_rows(df: pd.DataFrame) -> list[dict]:
     rows: list[dict] = []
     for _, series in df.iterrows():
@@ -303,9 +324,12 @@ def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict
 
     df = _clean_amount_column(df)
     rows = _df_to_rows(df)
+    excluded_rows = []
+    if platform == "支付宝":
+        rows, excluded_rows = _exclude_alipay_rows(rows)
     inserted, skipped = db.insert_transactions(rows)
     preview = rows[:5]
-    return inserted, skipped, preview
+    return inserted, skipped, excluded_rows, preview
 def import_manual_entry(
     trade_time: str,
     platform: str,
