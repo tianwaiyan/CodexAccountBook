@@ -687,6 +687,16 @@ def page_transactions() -> None:
     if st.session_state.get("tx_notice"):
         st.success(st.session_state.pop("tx_notice"))
 
+    all_selected = selected_count == len(editor_df)
+    select_all_label = "取消全选" if all_selected else "全选"
+    if st.button(select_all_label, use_container_width=True, type="secondary"):
+        selected_editor_df = editor_df.copy(deep=True)
+        selected_editor_df["选择"] = not all_selected
+        # 重建编辑器以同步所有复选框，同时保留表格中尚未保存的业务编辑。
+        st.session_state["tx_editor_seed"] = selected_editor_df
+        st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+        st.rerun()
+
     edit_col, save_col, undo_col, delete_col = st.columns(4)
     with edit_col:
         edit_selected = st.button("✏️ 修改选中行", type="primary" if selected_count == 1 else "secondary",
