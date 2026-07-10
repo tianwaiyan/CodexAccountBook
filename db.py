@@ -179,21 +179,20 @@ def update_transaction(
 def query_transactions(
     year_month: str,
     page: int = 1,
-    page_size: int = 50,
+    page_size: Optional[int] = 50,
     keyword: str = "",
 ) -> tuple[list[dict], int]:
-    """分页查询某月流水，支持关键字搜索。
+    """查询某月流水，支持关键字搜索和可选分页。
 
     Args:
         year_month: "2026-07" 格式。
-        page: 页码，从 1 开始。
-        page_size: 每页条数。
+        page: 页码，从 1 开始；仅 page_size 非空时生效。
+        page_size: 每页条数；传入 None 时返回全部匹配记录。
         keyword: 搜索关键字，模糊匹配 商品说明、分类、交易对方。
 
     Returns:
         (rows, total_count)
     """
-    offset = (page - 1) * page_size
     where = "WHERE strftime('%Y-%m', trade_time) = ?"
     params: list[object] = [year_month]
 
@@ -207,10 +206,13 @@ def query_transactions(
             f"SELECT COUNT(*) FROM transactions {where}", params
         ).fetchone()[0]
 
-        rows = conn.execute(
-            f"SELECT * FROM transactions {where} ORDER BY trade_time DESC LIMIT ? OFFSET ?",
-            params + [page_size, offset],
-        ).fetchall()
+        sql = f"SELECT * FROM transactions {where} ORDER BY trade_time DESC"
+        if page_size is not None:
+            offset = (page - 1) * page_size
+            sql += " LIMIT ? OFFSET ?"
+            rows = conn.execute(sql, params + [page_size, offset]).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
 
     return [dict(row) for row in rows], total
 

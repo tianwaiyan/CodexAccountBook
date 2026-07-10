@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from io import BytesIO
+import math
 
 import pandas as pd
 import plotly.express as px
@@ -42,7 +43,6 @@ STYLE = """
 st.markdown(STYLE, unsafe_allow_html=True)
 
 # ── 常量 ─────────────────────────────────────────────────────────────
-PAGE_SIZE = 50
 CATEGORIES = sorted(set(p.CATEGORY_MAP.values()))
 PLATFORMS = ["支付宝", "微信", "手动录入"]
 TRADE_TYPES = ["支出", "收入"]
@@ -57,6 +57,373 @@ def _format_money(value: float) -> str:
     if value >= 0:
         return f"¥{value:,.2f}"
     return f"-¥{abs(value):,.2f}"
+
+
+# ── 流水列表编辑辅助 ──────────────────────────────────────────────────
+TX_EDITOR_COLUMNS = ["时间", "来源", "收支", "金额", "分类", "说明", "对方", "支付方式"]
+
+
+def _reset_tx_editor() -> None:
+    """使流水编辑器在下次渲染时从数据库重新加载。"""
+    st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+    st.session_state["tx_baseline"] = None
+    st.session_state["tx_editor_current"] = None
+    st.session_state["tx_dirty"] = False
+    st.session_state["tx_editor_seed"] = None
+
+
+def _rows_to_editor_df(rows: list[dict]) -> pd.DataFrame:
+    """将数据库流水转换为可编辑表格，金额统一展示为正数。"""
+    editor_rows = []
+    for row in rows:
+        editor_rows.append({
+            "记录ID": row["id"],
+            "选择": False,
+            "时间": pd.to_datetime(row["trade_time"], errors="coerce"),
+            "来源": row["platform"] or "",
+            "收支": row["trade_type"] or "",
+            "金额": abs(float(row["amount"])),
+            "分类": row["category"] or "",
+            "说明": row["description"] or "",
+            "对方": row["counterparty"] or "",
+            "支付方式": row["payment_channel"] or "",
+        })
+    return pd.DataFrame(editor_rows)
+
+
+def _text_value(value: object) -> str:
+    """将表格文本值规范化，避免 Pandas 的 NaN 被保存为字符串 nan。"""
+    return "" if pd.isna(value) else str(value).strip()
+
+
+def _editor_row_to_db(row: pd.Series) -> dict:
+    """校验并转换一行编辑器数据为数据库字段。"""
+    parsed_time = pd.to_datetime(row["时间"], errors="coerce")
+    if pd.isna(parsed_time):
+        raise ValueError("交易时间格式无效")
+
+    platform = _text_value(row["来源"])
+    trade_type = _text_value(row["收支"])
+    if platform not in PLATFORMS:
+        raise ValueError("来源必须为支付宝、微信或手动录入")
+    if trade_type not in TRADE_TYPES:
+        raise ValueError("收支必须为支出或收入")
+
+    try:
+        amount = float(row["金额"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("金额必须为数字") from exc
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError("金额必须大于 0")
+
+    return {
+        "id": _text_value(row["记录ID"]),
+        "trade_time": parsed_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "platform": platform,
+        "trade_type": trade_type,
+        "amount": amount if trade_type == "收入" else -amount,
+        "category": _text_value(row["分类"]),
+        "description": _text_value(row["说明"]),
+        "counterparty": _text_value(row["对方"]),
+        "payment_channel": _text_value(row["支付方式"]),
+    }
+
+
+def _row_signature(row: pd.Series) -> tuple:
+    """用于比较编辑前后业务字段；选择框不计入未保存修改。"""
+    try:
+        values = _editor_row_to_db(row)
+        return tuple(values[column] for column in (
+            "trade_time", "platform", "trade_type", "amount", "category",
+            "description", "counterparty", "payment_channel",
+        ))
+    except ValueError:
+        # 无效输入也应视作未保存修改，以便用户能收到切换提示并修正它。
+        return tuple(_text_value(row.get(column, "")) for column in TX_EDITOR_COLUMNS)
+
+
+def _get_changed_editor_rows(editor_df: pd.DataFrame) -> list[pd.Series]:
+    """返回相对当前数据库快照发生业务变化的行。"""
+    baseline = st.session_state.get("tx_baseline")
+    if baseline is None:
+        return []
+
+    baseline_by_id = {
+        _text_value(row["记录ID"]): row
+        for _, row in baseline.iterrows()
+    }
+    changed = []
+    for _, row in editor_df.iterrows():
+        original = baseline_by_id.get(_text_value(row["记录ID"]))
+        if original is None or _row_signature(row) != _row_signature(original):
+            changed.append(row)
+    return changed
+
+
+def _save_editor_changes() -> tuple[bool, str]:
+    """校验并保存当前页全部表格改动。"""
+    editor_df = st.session_state.get("tx_editor_current")
+    if editor_df is None:
+        return True, "没有需要保存的修改。"
+
+    changed_rows = _get_changed_editor_rows(editor_df)
+    if not changed_rows:
+        return True, "没有需要保存的修改。"
+
+    updates = []
+    for row_number, row in enumerate(changed_rows, start=1):
+        try:
+            updates.append(_editor_row_to_db(row))
+        except ValueError as exc:
+            return False, f"第 {row_number} 条修改无效：{exc}"
+
+    updated = 0
+    try:
+        for values in updates:
+            if db.update_transaction(
+                values["id"],
+                trade_time=values["trade_time"],
+                platform=values["platform"],
+                trade_type=values["trade_type"],
+                amount=values["amount"],
+                category=values["category"],
+                description=values["description"],
+                counterparty=values["counterparty"],
+                payment_channel=values["payment_channel"],
+            ):
+                updated += 1
+    except Exception as exc:
+        return False, f"保存失败：{exc}"
+
+    _reset_tx_editor()
+    return True, f"已保存 {updated} 条修改。"
+
+
+def _apply_tx_pending_action(action: dict) -> None:
+    """执行此前因未保存提示而暂缓的页面或筛选切换。"""
+    _reset_tx_editor()
+    st.session_state["tx_pending_action"] = None
+    if action["kind"] == "page":
+        st.session_state["current_page"] = action["page"]
+    else:
+        context = action["context"]
+        st.session_state["tx_month"] = context["month"]
+        st.session_state["tx_year"] = context["month"][:4]
+        st.session_state["tx_search"] = context["keyword"]
+        st.session_state["tx_active_context"] = None
+
+
+def _continue_tx_editing() -> None:
+    st.session_state["tx_pending_action"] = None
+    st.session_state["tx_dialog_error"] = None
+
+
+def _discard_tx_pending_action() -> None:
+    action = st.session_state.get("tx_pending_action")
+    if action:
+        _apply_tx_pending_action(action)
+
+
+def _save_tx_pending_action() -> None:
+    action = st.session_state.get("tx_pending_action")
+    if not action:
+        return
+    ok, message = _save_editor_changes()
+    if ok:
+        _apply_tx_pending_action(action)
+    else:
+        st.session_state["tx_dialog_error"] = message
+
+
+@st.dialog("未保存的修改")
+def _render_unsaved_changes_dialog() -> None:
+    """确认是否保存或放弃切换前的表格改动。"""
+    action = st.session_state.get("tx_pending_action")
+    if not action:
+        return
+
+    st.warning("当前流水列表存在未保存的修改。")
+    st.caption("你可以继续编辑、放弃修改后切换，或保存后再切换。")
+    if st.session_state.get("tx_dialog_error"):
+        st.error(st.session_state["tx_dialog_error"])
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.button("继续编辑", use_container_width=True, on_click=_continue_tx_editing)
+    with col2:
+        st.button("放弃修改并切换", type="secondary", use_container_width=True,
+                  on_click=_discard_tx_pending_action)
+    with col3:
+        st.button("保存后切换", type="primary", use_container_width=True,
+                  on_click=_save_tx_pending_action)
+
+
+def _request_tx_filter_change() -> None:
+    """筛选控件变化时，拦截可能丢失的未保存编辑。"""
+    active_context = st.session_state.get("tx_active_context")
+    if not active_context:
+        return
+
+    requested_context = {
+        "month": st.session_state["tx_month"],
+        "keyword": st.session_state["tx_search"],
+    }
+    if requested_context == active_context:
+        return
+
+    if st.session_state.get("tx_dirty", False):
+        st.session_state["tx_month"] = active_context["month"]
+        st.session_state["tx_year"] = active_context["month"][:4]
+        st.session_state["tx_search"] = active_context["keyword"]
+        st.session_state["tx_pending_action"] = {
+            "kind": "filters", "context": requested_context,
+        }
+    else:
+        _reset_tx_editor()
+        st.session_state["tx_active_context"] = None
+
+
+def _request_tx_month_change(target_month: str) -> None:
+    """月份按钮或年份下拉变化时，安全地切换完整 YYYY-MM 筛选值。"""
+    active_context = st.session_state.get("tx_active_context")
+    if not active_context:
+        st.session_state["tx_month"] = target_month
+        st.session_state["tx_year"] = target_month[:4]
+        return
+
+    requested_context = {
+        "month": target_month,
+        "keyword": st.session_state.get("tx_search", ""),
+    }
+    if requested_context == active_context:
+        st.session_state["tx_month"] = target_month
+        st.session_state["tx_year"] = target_month[:4]
+        return
+
+    if st.session_state.get("tx_dirty", False):
+        st.session_state["tx_month"] = active_context["month"]
+        st.session_state["tx_year"] = active_context["month"][:4]
+        st.session_state["tx_pending_action"] = {
+            "kind": "filters", "context": requested_context,
+        }
+    else:
+        st.session_state["tx_month"] = target_month
+        st.session_state["tx_year"] = target_month[:4]
+        _reset_tx_editor()
+        st.session_state["tx_active_context"] = None
+
+
+def _request_tx_year_change() -> None:
+    """年份变化后默认切换到该年份最新一个有流水的月份。"""
+    selected_year = st.session_state["tx_year"]
+    available_months = st.session_state.get("tx_available_months", [])
+    year_months = [month for month in available_months if month.startswith(f"{selected_year}-")]
+    if year_months:
+        _request_tx_month_change(max(year_months))
+
+
+def _request_dashboard_month_change(target_month: str) -> None:
+    """仪表盘月份按钮回调。"""
+    st.session_state["dashboard_month"] = target_month
+    st.session_state["dashboard_year"] = target_month[:4]
+
+
+def _request_dashboard_year_change() -> None:
+    """仪表盘年份变化后默认定位到该年最新有流水的月份。"""
+    selected_year = st.session_state["dashboard_year"]
+    available_months = st.session_state.get("dashboard_available_months", [])
+    year_months = [month for month in available_months if month.startswith(f"{selected_year}-")]
+    if year_months:
+        _request_dashboard_month_change(max(year_months))
+
+
+def _request_page_change(page_name: str) -> None:
+    """侧边栏导航：离开流水列表前先确认未保存的表格编辑。"""
+    if (st.session_state.get("current_page") == "流水列表"
+            and page_name != "流水列表"
+            and st.session_state.get("tx_dirty", False)):
+        st.session_state["tx_pending_action"] = {"kind": "page", "page": page_name}
+        return
+    st.session_state["current_page"] = page_name
+
+
+@st.dialog("修改流水")
+def _render_single_edit_dialog(row: pd.Series) -> None:
+    """渲染单条流水的预填修改表单。"""
+    parsed_time = pd.to_datetime(row["时间"], errors="coerce")
+    default_time = parsed_time.to_pydatetime() if not pd.isna(parsed_time) else datetime.now()
+
+    with st.form("single_transaction_edit_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            trade_time = st.datetime_input("交易时间", value=default_time)
+            trade_type = st.selectbox("收支类型", TRADE_TYPES,
+                                      index=TRADE_TYPES.index(_text_value(row["收支"])))
+            amount = st.number_input("金额", min_value=0.01,
+                                     value=max(abs(float(row["金额"])), 0.01),
+                                     step=0.01, format="%.2f")
+        with col2:
+            platform = st.selectbox("来源", PLATFORMS,
+                                    index=PLATFORMS.index(_text_value(row["来源"])))
+            category = st.text_input("分类", value=_text_value(row["分类"]))
+        description = st.text_input("说明", value=_text_value(row["说明"]))
+        counterparty = st.text_input("交易对方", value=_text_value(row["对方"]))
+        payment_channel = st.text_input("支付方式", value=_text_value(row["支付方式"]))
+
+        save_col, cancel_col = st.columns(2)
+        with save_col:
+            submitted = st.form_submit_button("保存修改", type="primary", use_container_width=True)
+        with cancel_col:
+            cancelled = st.form_submit_button("取消", use_container_width=True)
+
+    if cancelled:
+        st.session_state["tx_single_edit_id"] = None
+        st.rerun()
+    if submitted:
+        values = {
+            "id": _text_value(row["记录ID"]),
+            "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "platform": platform,
+            "trade_type": trade_type,
+            "amount": amount if trade_type == "收入" else -amount,
+            "category": category.strip(),
+            "description": description.strip(),
+            "counterparty": counterparty.strip(),
+            "payment_channel": payment_channel.strip(),
+        }
+        try:
+            db.update_transaction(
+                values["id"],
+                trade_time=values["trade_time"], platform=values["platform"],
+                trade_type=values["trade_type"], amount=values["amount"],
+                category=values["category"], description=values["description"],
+                counterparty=values["counterparty"], payment_channel=values["payment_channel"],
+            )
+        except Exception as exc:
+            st.error(f"保存失败：{exc}")
+            return
+
+        # 将已保存行写回基线；同页其他未保存表格编辑仍然保留。
+        editor_df = st.session_state.get("tx_editor_current").copy()
+        baseline = st.session_state.get("tx_baseline").copy()
+        for frame in (editor_df, baseline):
+            index = frame.index[frame["记录ID"] == values["id"]]
+            if len(index):
+                idx = index[0]
+                frame.at[idx, "时间"] = pd.to_datetime(values["trade_time"])
+                frame.at[idx, "来源"] = values["platform"]
+                frame.at[idx, "收支"] = values["trade_type"]
+                frame.at[idx, "金额"] = abs(values["amount"])
+                frame.at[idx, "分类"] = values["category"]
+                frame.at[idx, "说明"] = values["description"]
+                frame.at[idx, "对方"] = values["counterparty"]
+                frame.at[idx, "支付方式"] = values["payment_channel"]
+        st.session_state["tx_baseline"] = baseline
+        st.session_state["tx_editor_seed"] = editor_df
+        st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+        st.session_state["tx_single_edit_id"] = None
+        st.session_state["tx_dirty"] = bool(_get_changed_editor_rows(editor_df))
+        st.session_state["tx_notice"] = "流水已修改。"
+        st.rerun()
 
 
 def _render_stat_cards(month: str) -> None:
@@ -163,11 +530,38 @@ def page_dashboard() -> None:
         return
 
     current_month = datetime.now().strftime("%Y-%m")
-    selected_month = st.selectbox(
-        "选择月份", months,
-        index=months.index(current_month) if current_month in months else 0,
-        key="dashboard_month",
+    if st.session_state.get("dashboard_month") not in months:
+        st.session_state["dashboard_month"] = current_month if current_month in months else months[0]
+    years = sorted({month[:4] for month in months}, reverse=True)
+    if st.session_state.get("dashboard_year") not in years:
+        st.session_state["dashboard_year"] = st.session_state["dashboard_month"][:4]
+    st.session_state["dashboard_available_months"] = months
+
+    st.selectbox(
+        "年份", years,
+        key="dashboard_year",
+        format_func=lambda year: f"{year}年",
+        on_change=_request_dashboard_year_change,
     )
+
+    selected_year = st.session_state["dashboard_year"]
+    selected_month = st.session_state["dashboard_month"]
+    st.caption("月份")
+    for start_month in (1, 7):
+        month_columns = st.columns(6)
+        for offset, column in enumerate(month_columns):
+            month_number = start_month + offset
+            target_month = f"{selected_year}-{month_number:02d}"
+            with column:
+                st.button(
+                    f"{month_number}月",
+                    key=f"dashboard_month_button_{selected_year}_{month_number}",
+                    type="primary" if target_month == selected_month else "secondary",
+                    disabled=target_month not in months,
+                    use_container_width=True,
+                    on_click=_request_dashboard_month_change,
+                    args=(target_month,),
+                )
 
     st.divider()
     _render_stat_cards(selected_month)
@@ -189,80 +583,157 @@ def page_dashboard() -> None:
 def page_transactions() -> None:
     st.title("📋 流水列表")
 
+    if st.session_state.get("tx_pending_action"):
+        _render_unsaved_changes_dialog()
+
     months = db.get_available_months()
     if not months:
         st.info("还没有任何交易记录。")
         return
 
     current_month = datetime.now().strftime("%Y-%m")
+    if st.session_state.get("tx_month") not in months:
+        st.session_state["tx_month"] = current_month if current_month in months else months[0]
+    years = sorted({month[:4] for month in months}, reverse=True)
+    if st.session_state.get("tx_year") not in years:
+        st.session_state["tx_year"] = st.session_state["tx_month"][:4]
+    st.session_state["tx_available_months"] = months
+    # 清理旧版本分页控件留下的会话状态。
+    st.session_state.pop("tx_page", None)
+    if "tx_search" not in st.session_state:
+        st.session_state["tx_search"] = ""
 
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2 = st.columns([1, 2])
     with col1:
-        selected_month = st.selectbox(
-            "月份", months,
-            index=months.index(current_month) if current_month in months else 0,
-            key="tx_month",
+        st.selectbox(
+            "年份", years,
+            key="tx_year",
+            format_func=lambda year: f"{year}年",
+            on_change=_request_tx_year_change,
         )
     with col2:
-        page = st.number_input("页码", min_value=1, value=1, key="tx_page")
-    with col3:
-        keyword = st.text_input("搜索（说明/分类/对方）", key="tx_search")
+        keyword = st.text_input("搜索（说明/分类/对方）", key="tx_search",
+                                on_change=_request_tx_filter_change)
 
-    rows, total = db.query_transactions(selected_month, page=page, page_size=PAGE_SIZE, keyword=keyword)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    selected_year = st.session_state["tx_year"]
+    selected_month = st.session_state["tx_month"]
+    st.caption("月份")
+    for start_month in (1, 7):
+        month_columns = st.columns(6)
+        for offset, column in enumerate(month_columns):
+            month_number = start_month + offset
+            target_month = f"{selected_year}-{month_number:02d}"
+            with column:
+                st.button(
+                    f"{month_number}月",
+                    key=f"tx_month_button_{selected_year}_{month_number}",
+                    type="primary" if target_month == selected_month else "secondary",
+                    disabled=target_month not in months,
+                    use_container_width=True,
+                    on_click=_request_tx_month_change,
+                    args=(target_month,),
+                )
 
-    st.caption(f"共 {total} 条记录，第 {page}/{total_pages} 页")
+    context = {"month": selected_month, "keyword": keyword}
+    if st.session_state.get("tx_active_context") != context:
+        # 没有脏数据的筛选变化会在回调中重置编辑器；首次进入同样在此建立基线。
+        if not st.session_state.get("tx_dirty", False):
+            _reset_tx_editor()
+        st.session_state["tx_active_context"] = context
+
+    rows, total = db.query_transactions(selected_month, page_size=None, keyword=keyword)
+
+    st.caption(f"共 {total} 条记录")
 
     if not rows:
         st.info("当前条件下没有记录。")
         return
 
-    df = pd.DataFrame(rows)
-    df_display = df.rename(columns={
-        "trade_time": "时间",
-        "platform": "来源",
-        "trade_type": "收支",
-        "amount": "金额",
-        "category": "分类",
-        "description": "说明",
-        "counterparty": "对方",
-        "payment_channel": "支付方式",
-    })
-    df_display["金额"] = df_display["金额"].apply(lambda x: f"¥{x:,.2f}")
-    df_display = df_display[["时间", "来源", "收支", "金额", "分类", "说明", "对方", "支付方式"]]
+    database_df = _rows_to_editor_df(rows)
+    if st.session_state.get("tx_baseline") is None:
+        st.session_state["tx_baseline"] = database_df.copy(deep=True)
+    editor_source = st.session_state.pop("tx_editor_seed", None)
+    if editor_source is None:
+        editor_source = st.session_state["tx_baseline"].copy(deep=True)
 
-    # 删除计数器 — 用于重置表格选择状态
-    if "tx_del_counter" not in st.session_state:
-        st.session_state["tx_del_counter"] = 0
-
-    # 带行选择的数据表格（动态 key，删除后重建）
-    selection_event = st.dataframe(
-        df_display,
+    editor_df = st.data_editor(
+        editor_source,
         use_container_width=True,
         hide_index=True,
-        height=600,
-        selection_mode="multi-row",
-        on_select="rerun",
-        key=f"tx_table_{st.session_state.tx_del_counter}",
+        key=f"tx_editor_{st.session_state.get('tx_editor_version', 0)}",
+        disabled=["记录ID"],
+        column_config={
+            "记录ID": None,
+            "选择": st.column_config.CheckboxColumn("选择", default=False),
+            "时间": st.column_config.DatetimeColumn("时间", format="YYYY-MM-DD HH:mm:ss"),
+            "来源": st.column_config.SelectboxColumn("来源", options=PLATFORMS, required=True),
+            "收支": st.column_config.SelectboxColumn("收支", options=TRADE_TYPES, required=True),
+            "金额": st.column_config.NumberColumn("金额", min_value=0.01, step=0.01,
+                                                     format="¥%.2f", required=True),
+            "分类": st.column_config.TextColumn("分类"),
+            "说明": st.column_config.TextColumn("说明"),
+            "对方": st.column_config.TextColumn("对方"),
+            "支付方式": st.column_config.TextColumn("支付方式"),
+        },
     )
+    st.session_state["tx_editor_current"] = editor_df.copy(deep=True)
+    changed_rows = _get_changed_editor_rows(editor_df)
+    st.session_state["tx_dirty"] = bool(changed_rows)
+    selected_df = editor_df[editor_df["选择"].fillna(False).astype(bool)]
+    selected_count = len(selected_df)
 
-    # 获取选中的行索引
-    selected_rows = getattr(getattr(selection_event, "selection", None), "rows", [])
+    if selected_count:
+        st.caption(f"已选中 {selected_count} 行")
+    if st.session_state.get("tx_notice"):
+        st.success(st.session_state.pop("tx_notice"))
 
-    # 选中提示
-    if selected_rows:
-        st.caption(f"已选中 {len(selected_rows)} 行")
+    edit_col, save_col, undo_col, delete_col = st.columns(4)
+    with edit_col:
+        edit_selected = st.button("✏️ 修改选中行", type="primary" if selected_count == 1 else "secondary",
+                                  use_container_width=True,
+                                  disabled=selected_count != 1)
+    with save_col:
+        save_changes = st.button("💾 保存修改", type="primary", use_container_width=True,
+                                 disabled=not changed_rows)
+    with undo_col:
+        undo_changes = st.button("↩️ 撤销修改", type="primary" if changed_rows else "secondary",
+                                 use_container_width=True,
+                                 disabled=not changed_rows)
+    with delete_col:
+        delete_selected = st.button("🗑️ 删除选中行", use_container_width=True,
+                                    disabled=selected_count == 0 or bool(changed_rows))
 
-    # 删除按钮 — 始终可见，无勾选时禁用
-    if st.button("🗑️ 删除选中行", type="primary", disabled=len(selected_rows) == 0):
-        deleted = 0
-        for idx in sorted(selected_rows, reverse=True):
-            if idx < len(rows):
-                if db.delete_transaction(rows[idx]["id"]):
-                    deleted += 1
-        if deleted > 0:
-            st.session_state["tx_del_counter"] += 1
+    if edit_selected:
+        st.session_state["tx_single_edit_id"] = _text_value(selected_df.iloc[0]["记录ID"])
+
+    if save_changes:
+        ok, message = _save_editor_changes()
+        if ok:
+            st.session_state["tx_notice"] = message
             st.rerun()
+        st.error(message)
+
+    if undo_changes:
+        _reset_tx_editor()
+        st.session_state["tx_notice"] = "已撤销未保存的修改。"
+        st.rerun()
+
+    if delete_selected:
+        deleted = 0
+        for transaction_id in selected_df["记录ID"].tolist():
+            if db.delete_transaction(transaction_id):
+                deleted += 1
+        _reset_tx_editor()
+        st.session_state["tx_notice"] = f"已删除 {deleted} 条记录。"
+        st.rerun()
+
+    edit_id = st.session_state.get("tx_single_edit_id")
+    if edit_id:
+        selected_row = editor_df.loc[editor_df["记录ID"] == edit_id]
+        if not selected_row.empty:
+            _render_single_edit_dialog(selected_row.iloc[0])
+        else:
+            st.session_state["tx_single_edit_id"] = None
 
 
 def page_import() -> None:
@@ -422,7 +893,7 @@ def main() -> None:
         for page_name in pages:
             if st.button(page_name, use_container_width=True,
                          type="primary" if st.session_state["current_page"] == page_name else "secondary"):
-                st.session_state["current_page"] = page_name
+                _request_page_change(page_name)
                 st.rerun()
 
     pages[st.session_state["current_page"]]()
