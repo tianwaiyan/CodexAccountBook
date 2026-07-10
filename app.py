@@ -267,6 +267,9 @@ def page_transactions() -> None:
 
 def page_import() -> None:
     st.title("📥 导入账单")
+    if "excluded_records" not in st.session_state:
+        st.session_state["excluded_records"] = []
+
 
     st.caption("上传支付宝或微信导出的 CSV 账单，自动去重后存入数据库。")
 
@@ -296,6 +299,8 @@ def page_import() -> None:
                     with st.expander(f"支付宝自动过滤记录 ({len(excluded_rows)} 条)"):
                         st.dataframe(pd.DataFrame(excluded_rows), use_container_width=True, hide_index=True)
                         st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
+                if excluded_rows:
+                    st.session_state["excluded_records"].extend(excluded_rows)
             except Exception as exc:
                 st.error(f"支付宝导入失败：{exc}")
 
@@ -331,6 +336,17 @@ def page_import() -> None:
                         use_container_width=True,
                     )
 
+
+
+
+    if st.session_state["excluded_records"]:
+        st.divider()
+        with st.expander(f"📋 历史自动过滤记录 ({len(st.session_state["excluded_records"])} 条)", expanded=True):
+            st.dataframe(pd.DataFrame(st.session_state["excluded_records"]), use_container_width=True, hide_index=True)
+            st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
+        if st.button("🗑️ 清除过滤记录", use_container_width=True, type="secondary"):
+            st.session_state["excluded_records"] = []
+            st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════
 # 页面：手动记账
@@ -387,6 +403,9 @@ def main() -> None:
 
     if "current_page" not in st.session_state:
         st.session_state["current_page"] = "仪表盘"
+
+    if "excluded_records" not in st.session_state:
+        st.session_state["excluded_records"] = []
 
     with st.sidebar:
         st.title("个人记账系统")
