@@ -1,123 +1,115 @@
-# Project Profile: 个人记账系统
+# 个人记账系统开发指南
 
-## 项目概述
-基于 Streamlit + SQLite 的本地 Web 个人记账应用。支持支付宝/微信账单 CSV/XLSX 导入、自动去重合并、仪表盘可视化分析、流水列表管理、手动记账、Excel 备份导出。通过 pythonw 后台一键启动，浏览器访问。
+本文件是本项目后续开发的项目级工作规范。新增功能、修复缺陷或调整界面前，均应先阅读并遵守本指南。
 
-## 技术栈
-- 前端：Streamlit (Python)
-- 数据库：SQLite (WAL 模式, row_factory=sqlite3.Row)
-- 图表：Plotly (折线图、饼图)
-- 数据处理：Pandas, openpyxl
-- 打包：PyInstaller (onedir)
-- 启动：BAT 脚本 + pythonw 后台无窗口
+## 1. 开发前必读
 
-## 项目文件结构
+按以下顺序阅读，先确认现状再修改：
 
-app.py          — Streamlit 前端（页面路由、UI、图表）
-db.py           — SQLite 数据库层（建表、CRUD、聚合查询、WAL 模式、连接管理）
-parser.py       — 支付宝/微信账单解析器（编码处理、列名映射、import_hash 去重）
-launcher.py     — 启动器（自动分配端口、打开浏览器、PyInstaller 资源路径）
-启动.bat         — 一键启动（自动杀旧进程 → pythonw 后台启动 → 打开浏览器 → 自动关闭）
-build_exe.ps1   — PyInstaller 打包脚本
-requirements.txt
-.gitignore      — 排除 data/、*.xlsx、*.csv、dist/、build/
+1. `AGENTS.md`：项目目标、约束、架构与开发规范。
+2. `更新记录.md`：最近已交付的功能成果，避免回退或重复实现。
+3. `README.md`：用户视角的功能、启动与发布方式。
+4. 按任务范围阅读实现文件：
+   - 界面、交互、会话状态：`app.py`
+   - 数据库、查询、统计：`db.py`
+   - 账单导入、字段映射、去重和过滤：`parser.py`
+   - 启动、端口与冻结资源：`launcher.py`、`启动.bat`
+   - 打包：`build_exe.ps1`
 
-## 数据库 (db.py)
+修改前先检查工作区已有改动；不得覆盖、回退或删除与当前任务无关的用户修改。
 
-表: transactions
-  id               TEXT PK
-  trade_time       DATETIME NOT NULL
-  platform         TEXT NOT NULL        (支付宝/微信/手动录入)
-  trade_type       TEXT NOT NULL        (支出/收入)
-  amount           REAL NOT NULL
-  category         TEXT DEFAULT ''
-  description      TEXT DEFAULT ''
-  counterparty     TEXT DEFAULT ''
-  payment_channel  TEXT DEFAULT ''
-  import_hash      TEXT UNIQUE NOT NULL (去重用)
+## 2. 项目目标与边界
 
-索引: idx_trade_time(DESC), idx_platform, idx_category
+这是一个面向中文用户的本地单用户个人记账系统，基于 Streamlit、SQLite 与 Pandas。核心目标是：
 
-连接特性:
-- _get_connection(): conn.row_factory = sqlite3.Row, check_same_thread=False
-- get_connection(): @contextmanager 装饰器, 自动 commit/rollback/close
-- init_db() 启用 PRAGMA journal_mode=WAL, foreign_keys=ON, busy_timeout=5000
-- _db_dir() 兼容 frozen 模式 (sys.executable 父目录)
+- 可靠导入支付宝与微信账单，正确解析、自动去重，并保留必要的过滤复核信息。
+- 让用户快速查看月度收支、分类和平台分布，并能管理、筛选和修正流水。
+- 数据默认保存在本机，启动简单，支持 Excel 备份与 PyInstaller 打包。
 
-API:
-- init_db()
-- insert_transactions(rows: list[dict]) → (inserted, skipped)
-- delete_transaction(id: str) → bool
-- update_transaction(id, **kwargs) → bool
-- query_transactions(year_month, page, page_size, keyword) → (rows, total)
-- get_available_months() → list[str]
-- get_monthly_stats() → list[dict]        (月度收支汇总)
-- get_monthly_category_stats(ym) → list[dict]  (分类支出)
-- get_platform_stats(ym) → list[dict]     (平台分布)
-- get_month_summary(ym) → dict            (收入/支出/结余)
-- get_all_transactions_count() → int
+除非任务明确要求，不引入云端同步、用户账号、多用户权限、远程数据库或复杂前端框架。
 
-## 账单解析器 (parser.py)
+## 3. 技术与架构
 
-支付宝: 编码 GBK/gb18030, skiprows=24, 列映射 (交易时间→trade_time, 交易分类→category, 收/支→trade_type...)
-微信: 编码 UTF-8, skiprows=16, 列映射 (交易时间→trade_time, 交易类型→category, 收/支→trade_type...)
-去重: import_hash = MD5(时间 + 金额 + 对方 + 商品说明)
+### 技术栈
 
-## 页面路由 (app.py)
+- 前端：Streamlit（宽屏本地 Web 应用）
+- 数据库：SQLite，启用 WAL、外键与 busy timeout
+- 数据处理：Pandas、openpyxl
+- 图表：Plotly
+- 打包与启动：PyInstaller、BAT + pythonw
 
-侧边栏导航: 仪表盘 / 流水列表 / 导入账单 / 手动记账
-current_page 状态: session_state["current_page"]
+### 文件职责
 
-### 1. 仪表盘 (page_dashboard)
-- 月份选择下拉框
-- 收支概览卡片 (st.metric 风格, 自定义 CSS 样式)
-- Plotly 月度趋势折线图 (双线: 收入/支出)
-- Plotly 当月各分类支出饼图
-- Plotly 当月各平台支出饼图
-- 无记录时显示 st.info 提示
+| 文件 | 职责 |
+| --- | --- |
+| `app.py` | 页面路由、会话状态、表格编辑、筛选、表单、图表与中文 UI。 |
+| `db.py` | 建表、连接管理、CRUD、分页/无分页查询和统计聚合。 |
+| `parser.py` | 支付宝/微信 CSV/XLSX 解析、字段标准化、`import_hash` 去重和自动过滤。 |
+| `launcher.py` | 自动端口、浏览器打开、冻结模式资源定位与 Streamlit 启动。 |
+| `启动.bat` | 关闭旧服务后以后台方式启动本地应用。 |
+| `build_exe.ps1` | PyInstaller onedir 打包。 |
+| `更新记录.md` | 按日期记录已交付的最终成果。 |
 
-### 2. 流水列表 (page_transactions)
-- 月份/页码/关键字搜索 三栏筛选
-- st.dataframe(selection_mode="multi-row", on_select="rerun")
-- 动态 key: tx_table_{counter} — 删除后 counter+1 使复选框自动复位
-- 删除按钮: type="primary", disabled=len(selected_rows)==0
-- 删除逻辑: sorted(selected_rows, reverse=True) 倒序安全删除
-- 无记录时显示 st.info
+### 页面与会话状态
 
-### 3. 导入账单 (page_import)
-- 两个 file_uploader (支付宝/微信)
-- 调用 parser.py 的 import_csv_to_db()
-- 显示插入/跳过统计
-- 预览展开面板
-- Excel 备份导出按钮
+- `page_dashboard`：收支概览卡片、月度趋势、分类/平台饼图；使用“年份下拉 + 12 月按钮”选择月份。
+- `page_transactions`：按月全量显示流水，提供关键词与字段筛选、可编辑表格、单条修改、批量保存、撤销、全选和删除。
+- `page_import`：支付宝/微信账单上传、导入统计、预览、自动过滤记录复核和 Excel 备份导出。
+- `page_manual`：手动录入单笔流水。
 
-### 4. 手动记账 (page_manual)
-- st.form 表单
-- 日期/收支类型/金额/来源/分类/说明/对方/支付渠道
-- 提交后插入 DB
+会话状态仅用于 UI 和暂存编辑，例如当前页面、当前月份、筛选条件、编辑器基线与未保存修改。会话状态不能替代持久化数据。
 
-## 启动器 (launcher.py)
+## 4. 数据与业务不变量
 
-- find_free_port() 自动分配端口
-- resource_path() 兼容 PyInstaller frozen 模式
-- 线程异步打开浏览器
-- 调用 streamlit.web.cli.main()
+### 数据库
 
-## 启动方式
+`transactions` 是唯一的业务流水表，关键字段包括：时间、平台、收支类型、金额、分类、说明、对方、支付方式与 `import_hash`。
 
-双击 启动.bat:
-  1. 查找端口 8501 的 LISTENING 进程并强制关闭
-  2. pythonw -m streamlit run app.py --server.port 8501 --server.headless true (后台无窗口)
-  3. 等待 4 秒
-  4. 打开浏览器 http://localhost:8501
-  5. bat 自动关闭
+- 收入金额在数据库中必须为正，支出金额必须为负；UI 编辑与手动录入以正数输入，再根据收支类型转换。
+- `import_hash` 是导入去重键。修改已有流水时只更新业务字段，不得随意改写该值。
+- 所有数据库读写必须经 `db.py` 的 API；禁止在 `app.py` 中直接拼接 SQL 或自行管理 SQLite 连接。
+- `query_transactions(..., page_size=None)` 表示返回当前条件下全部记录；流水列表按月全量显示时应使用该模式。
+- 数据库路径为 `data/account_book.db`；冻结模式必须兼容可执行文件目录。
 
-命令行: python launcher.py
+### 导入与自动过滤
 
-## 注意事项
+- 支付宝账单使用 GBK/gb18030 兼容读取；微信账单兼容 CSV 和 XLSX。
+- 上传文件读取到 `BytesIO` 后必须保留原始文件名，以便正确识别 `.xlsx`。
+- 自动过滤的记录不得写入数据库。支付宝过滤余额宝收益发放、花呗自动还款、银行卡定时转入；微信过滤“转入零钱通”，且必须同时检查说明与映射后的分类。
+- 自动过滤记录的历史复核仅为当前 Streamlit 浏览器会话级数据，不写入 SQLite；服务重启、会话重建或关闭浏览器后会清空。
 
-- 数据库文件位置: {项目根目录}/data/account_book.db
-- frozen 模式下使用 sys.executable 父目录
-- Chinese 路径可能在某些终端显示乱码（内部处理正确）
-- 多个 Streamlit 实例不能同时绑定同一端口 — 启动.bat 已处理
-- st.dataframe 的 selection_mode 需要 Streamlit >= 1.35
+## 5. 开发与代码规范
+
+- 先理解现有数据流与会话状态，再做最小范围修改；避免无关重构。
+- 保持 Python 类型标注、中文用户文案、现有命名风格与模块边界。
+- 文件修改使用 `apply_patch`；不要用临时脚本重写项目源码。
+- 涉及字段、金额、时间或导入规则时，先确认其数据库表示与 UI 表示是否一致。
+- 修改会改变列表上下文的控件（页面、年月、关键词、字段筛选）时，必须兼容未保存修改保护；不得静默丢弃编辑内容。
+- 新成果完成后，在 `更新记录.md` 顶部按日期追加最终成果。更新记录只写结果，不写开发过程、工具调用或验证过程。
+
+## 6. UI 设计规范
+
+### 通用风格
+
+- 面向本地桌面使用，采用 `layout="wide"`，界面简洁、清晰、中文优先。
+- 主内容容器顶部留白统一为 `3rem`，确保首行控件避开 Streamlit 顶部工具栏；后续不得随意压缩该值。
+- 复用现有统计卡片和间距风格；新控件应放在逻辑相关内容附近，避免无意义的层级和重复入口。
+- 流水列表将紧凑的年份选择、12 个月按钮和关键词搜索置于同一行；标准桌面宽度下年份框约 75px、月份按钮约 30px，且每个年份/月度选项后保留 5px 空白，避免换行。
+- 字段筛选栏在流水列表顶部常驻显示；“取消筛选”位于最右侧，只清空条件而不隐藏筛选控件。
+- 主操作使用 `type="primary"`；一个局部操作区避免出现多个无优先级的主按钮。
+- 删除、覆盖、清空等高风险操作必须具备明确禁用条件、确认或可恢复机制。
+
+
+## 7. 完成前验收清单
+
+按任务类型执行必要验证，并在交付时说明结果：
+
+| 任务类型 | 最低验收 |
+| --- | --- |
+| UI/会话状态 | Python 语法检查；使用 Streamlit 测试运行器或本地页面验证关键交互。 |
+| 数据库 | 覆盖新增、更新、删除或查询的目标路径；确认金额符号、去重和事务行为。 |
+| 导入解析 | 使用对应平台及文件类型样本，核对解析、自动过滤和重复导入结果。 |
+| 启动/打包 | 验证启动命令或脚本；涉及冻结资源时验证路径兼容性。 |
+| 文档 | UTF-8 中文内容正确；功能交付后更新 `更新记录.md` 的成果与日期。 |
+
+如验证需要启动服务，完成后关闭为测试临时启动的服务，避免占用用户的常用端口。

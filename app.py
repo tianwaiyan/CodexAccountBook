@@ -38,6 +38,23 @@ STYLE = """
     .income { color: #10b981; }
     .expense { color: #ef4444; }
     .balance { color: #3b82f6; }
+    [data-testid="stMainBlockContainer"],
+    section.main > div.block-container {
+        padding-top: 3rem;
+        padding-bottom: 1.5rem;
+    }
+    .st-key-tx_filter_toggle button {
+        min-height: 68px;
+    }
+    [class*="st-key-tx_month_button_"] button {
+        min-height: 36px;
+        padding-inline: 0.15rem;
+        font-size: 0.75rem;
+        width: calc(100% - 5px) !important;
+    }
+    .st-key-tx_year [data-testid="stSelectbox"] {
+        width: calc(100% - 5px);
+    }
 </style>
 """
 st.markdown(STYLE, unsafe_allow_html=True)
@@ -70,6 +87,78 @@ def _reset_tx_editor() -> None:
     st.session_state["tx_editor_current"] = None
     st.session_state["tx_dirty"] = False
     st.session_state["tx_editor_seed"] = None
+
+
+def _empty_tx_column_filters() -> dict:
+    """返回未启用任何字段筛选的标准状态。"""
+    return {
+        "platforms": [],
+        "trade_types": [],
+        "categories": [],
+        "amount_min": None,
+        "amount_max": None,
+    }
+
+
+def _normalise_tx_column_filters(filters: dict | None) -> dict:
+    """标准化会话状态中的字段筛选，便于可靠比较与应用。"""
+    filters = filters or {}
+    return {
+        "platforms": sorted(filters.get("platforms", [])),
+        "trade_types": sorted(filters.get("trade_types", [])),
+        "categories": sorted(filters.get("categories", [])),
+        "amount_min": filters.get("amount_min"),
+        "amount_max": filters.get("amount_max"),
+    }
+
+
+def _set_tx_column_filters(filters: dict, *, update_draft: bool = True) -> None:
+    """写入已应用字段筛选，并在需要时同步筛选表单草稿。"""
+    filters = _normalise_tx_column_filters(filters)
+    st.session_state["tx_column_filters"] = filters
+    if update_draft:
+        st.session_state["tx_filter_platforms"] = filters["platforms"]
+        st.session_state["tx_filter_trade_types"] = filters["trade_types"]
+        st.session_state["tx_filter_categories"] = filters["categories"]
+        st.session_state["tx_filter_amount_min"] = filters["amount_min"]
+        st.session_state["tx_filter_amount_max"] = filters["amount_max"]
+
+
+def _filter_tx_rows(rows: list[dict], filters: dict) -> list[dict]:
+    """在当前月份和关键词结果上应用字段筛选。"""
+    filters = _normalise_tx_column_filters(filters)
+    result = []
+    for row in rows:
+        if filters["platforms"] and row["platform"] not in filters["platforms"]:
+            continue
+        if filters["trade_types"] and row["trade_type"] not in filters["trade_types"]:
+            continue
+        if filters["categories"] and row["category"] not in filters["categories"]:
+            continue
+        amount = abs(float(row["amount"]))
+        if filters["amount_min"] is not None and amount < filters["amount_min"]:
+            continue
+        if filters["amount_max"] is not None and amount > filters["amount_max"]:
+            continue
+        result.append(row)
+    return result
+
+
+def _tx_filter_summary(filters: dict) -> str:
+    """将当前字段筛选压缩为用户可读摘要。"""
+    filters = _normalise_tx_column_filters(filters)
+    parts = []
+    if filters["platforms"]:
+        parts.append("来源：" + "、".join(filters["platforms"]))
+    if filters["trade_types"]:
+        parts.append("收支：" + "、".join(filters["trade_types"]))
+    if filters["categories"]:
+        parts.append("分类：" + "、".join(filters["categories"]))
+    if filters["amount_min"] is not None or filters["amount_max"] is not None:
+        lower = f"¥{filters['amount_min']:,.2f}" if filters["amount_min"] is not None else "不限"
+        upper = f"¥{filters['amount_max']:,.2f}" if filters["amount_max"] is not None else "不限"
+        parts.append(f"金额：{lower} 至 {upper}")
+    return "；".join(parts) if parts else "未设置字段筛选"
 
 
 def _rows_to_editor_df(rows: list[dict]) -> pd.DataFrame:
@@ -210,12 +299,14 @@ def _apply_tx_pending_action(action: dict) -> None:
         st.session_state["tx_month"] = context["month"]
         st.session_state["tx_year"] = context["month"][:4]
         st.session_state["tx_search"] = context["keyword"]
+        _set_tx_column_filters(context.get("column_filters", _empty_tx_column_filters()))
         st.session_state["tx_active_context"] = None
 
 
 def _continue_tx_editing() -> None:
     st.session_state["tx_pending_action"] = None
     st.session_state["tx_dialog_error"] = None
+    _set_tx_column_filters(st.session_state.get("tx_column_filters", _empty_tx_column_filters()))
 
 
 def _discard_tx_pending_action() -> None:
@@ -257,59 +348,93 @@ def _render_unsaved_changes_dialog() -> None:
                   on_click=_save_tx_pending_action)
 
 
-def _request_tx_filter_change() -> None:
-    """筛选控件变化时，拦截可能丢失的未保存编辑。"""
+def _request_tx_context_change(requested_context: dict) -> None:
+    """安全地请求列表条件切换；脏编辑时转为确认动作。"""
     active_context = st.session_state.get("tx_active_context")
+    requested_context["column_filters"] = _normalise_tx_column_filters(
+        requested_context.get("column_filters")
+    )
     if not active_context:
+        st.session_state["tx_month"] = requested_context["month"]
+        st.session_state["tx_year"] = requested_context["month"][:4]
+        st.session_state["tx_search"] = requested_context["keyword"]
+        _set_tx_column_filters(requested_context["column_filters"])
         return
 
-    requested_context = {
-        "month": st.session_state["tx_month"],
-        "keyword": st.session_state["tx_search"],
-    }
     if requested_context == active_context:
+        _set_tx_column_filters(requested_context["column_filters"])
         return
 
     if st.session_state.get("tx_dirty", False):
         st.session_state["tx_month"] = active_context["month"]
         st.session_state["tx_year"] = active_context["month"][:4]
         st.session_state["tx_search"] = active_context["keyword"]
+        _set_tx_column_filters(active_context.get("column_filters", _empty_tx_column_filters()))
         st.session_state["tx_pending_action"] = {
             "kind": "filters", "context": requested_context,
         }
     else:
+        st.session_state["tx_month"] = requested_context["month"]
+        st.session_state["tx_year"] = requested_context["month"][:4]
+        st.session_state["tx_search"] = requested_context["keyword"]
+        _set_tx_column_filters(requested_context["column_filters"])
         _reset_tx_editor()
         st.session_state["tx_active_context"] = None
+
+
+def _request_tx_filter_change() -> None:
+    """关键词变化时，拦截可能丢失的未保存编辑。"""
+    _request_tx_context_change({
+        "month": st.session_state["tx_month"],
+        "keyword": st.session_state["tx_search"],
+        "column_filters": st.session_state.get("tx_column_filters", _empty_tx_column_filters()),
+    })
 
 
 def _request_tx_month_change(target_month: str) -> None:
     """月份按钮或年份下拉变化时，安全地切换完整 YYYY-MM 筛选值。"""
-    active_context = st.session_state.get("tx_active_context")
-    if not active_context:
-        st.session_state["tx_month"] = target_month
-        st.session_state["tx_year"] = target_month[:4]
-        return
-
-    requested_context = {
+    _request_tx_context_change({
         "month": target_month,
         "keyword": st.session_state.get("tx_search", ""),
-    }
-    if requested_context == active_context:
-        st.session_state["tx_month"] = target_month
-        st.session_state["tx_year"] = target_month[:4]
-        return
+        # 切换月份时，字段筛选自动清空。
+        "column_filters": _empty_tx_column_filters(),
+    })
 
-    if st.session_state.get("tx_dirty", False):
-        st.session_state["tx_month"] = active_context["month"]
-        st.session_state["tx_year"] = active_context["month"][:4]
-        st.session_state["tx_pending_action"] = {
-            "kind": "filters", "context": requested_context,
-        }
-    else:
-        st.session_state["tx_month"] = target_month
-        st.session_state["tx_year"] = target_month[:4]
-        _reset_tx_editor()
-        st.session_state["tx_active_context"] = None
+
+def _request_tx_column_filter_apply() -> None:
+    """应用筛选表单草稿，并复用未保存修改确认流程。"""
+    target_filters = _normalise_tx_column_filters({
+        "platforms": st.session_state.get("tx_filter_platforms", []),
+        "trade_types": st.session_state.get("tx_filter_trade_types", []),
+        "categories": st.session_state.get("tx_filter_categories", []),
+        "amount_min": st.session_state.get("tx_filter_amount_min"),
+        "amount_max": st.session_state.get("tx_filter_amount_max"),
+    })
+    lower, upper = target_filters["amount_min"], target_filters["amount_max"]
+    if lower is not None and upper is not None and lower > upper:
+        st.session_state["tx_filter_error"] = "最低金额不能大于最高金额。"
+        return
+    st.session_state["tx_filter_error"] = None
+    _request_tx_context_change({
+        "month": st.session_state["tx_month"],
+        "keyword": st.session_state.get("tx_search", ""),
+        "column_filters": target_filters,
+    })
+
+
+def _request_tx_column_filter_clear() -> None:
+    """清除已应用及草稿中的字段筛选。"""
+    st.session_state["tx_filter_error"] = None
+    _request_tx_context_change({
+        "month": st.session_state["tx_month"],
+        "keyword": st.session_state.get("tx_search", ""),
+        "column_filters": _empty_tx_column_filters(),
+    })
+
+
+def _cancel_tx_filters() -> None:
+    """清空当前字段筛选，筛选控件继续常驻显示。"""
+    _request_tx_column_filter_clear()
 
 
 def _request_tx_year_change() -> None:
@@ -522,8 +647,6 @@ def _render_platform_pie(month: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def page_dashboard() -> None:
-    st.title("📊 仪表盘")
-
     months = db.get_available_months()
     if not months:
         st.info("还没有任何交易记录，先去「导入账单」或「手动记账」添加数据吧。")
@@ -581,8 +704,6 @@ def page_dashboard() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def page_transactions() -> None:
-    st.title("📋 流水列表")
-
     if st.session_state.get("tx_pending_action"):
         _render_unsaved_changes_dialog()
 
@@ -602,116 +723,157 @@ def page_transactions() -> None:
     st.session_state.pop("tx_page", None)
     if "tx_search" not in st.session_state:
         st.session_state["tx_search"] = ""
+    if "tx_column_filters" not in st.session_state:
+        _set_tx_column_filters(_empty_tx_column_filters())
+    elif "tx_filter_platforms" not in st.session_state:
+        _set_tx_column_filters(st.session_state["tx_column_filters"])
+    # 清理旧版展开式筛选栏留下的会话状态。
+    st.session_state.pop("tx_filter_expanded", None)
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.selectbox(
-            "年份", years,
-            key="tx_year",
-            format_func=lambda year: f"{year}年",
-            on_change=_request_tx_year_change,
-        )
-    with col2:
-        keyword = st.text_input("搜索（说明/分类/对方）", key="tx_search",
-                                on_change=_request_tx_filter_change)
-
+    # 先占位再填充：控件和操作按钮始终位于表格上方，避免表格渲染顺序限制布局。
+    controls_slot = st.empty()
+    table_slot = st.empty()
     selected_year = st.session_state["tx_year"]
     selected_month = st.session_state["tx_month"]
-    st.caption("月份")
-    for start_month in (1, 7):
-        month_columns = st.columns(6)
-        for offset, column in enumerate(month_columns):
-            month_number = start_month + offset
-            target_month = f"{selected_year}-{month_number:02d}"
-            with column:
-                st.button(
-                    f"{month_number}月",
-                    key=f"tx_month_button_{selected_year}_{month_number}",
-                    type="primary" if target_month == selected_month else "secondary",
-                    disabled=target_month not in months,
-                    use_container_width=True,
-                    on_click=_request_tx_month_change,
-                    args=(target_month,),
-                )
-
-    context = {"month": selected_month, "keyword": keyword}
+    keyword = st.session_state["tx_search"]
+    applied_filters = _normalise_tx_column_filters(st.session_state["tx_column_filters"])
+    context = {
+        "month": selected_month,
+        "keyword": keyword,
+        "column_filters": applied_filters,
+    }
     if st.session_state.get("tx_active_context") != context:
-        # 没有脏数据的筛选变化会在回调中重置编辑器；首次进入同样在此建立基线。
         if not st.session_state.get("tx_dirty", False):
             _reset_tx_editor()
         st.session_state["tx_active_context"] = context
 
-    rows, total = db.query_transactions(selected_month, page_size=None, keyword=keyword)
+    base_rows, total = db.query_transactions(selected_month, page_size=None, keyword=keyword)
+    rows = _filter_tx_rows(base_rows, applied_filters)
+    editor_df = None
+    changed_rows = []
+    selected_df = pd.DataFrame()
+    selected_count = 0
 
-    st.caption(f"共 {total} 条记录")
+    with table_slot.container():
+        st.caption(f"显示 {len(rows)} / {total} 条记录")
+        if not rows:
+            st.info("当前筛选条件下没有记录。")
+        else:
+            database_df = _rows_to_editor_df(rows)
+            if st.session_state.get("tx_baseline") is None:
+                st.session_state["tx_baseline"] = database_df.copy(deep=True)
+            editor_source = st.session_state.pop("tx_editor_seed", None)
+            if editor_source is None:
+                editor_source = st.session_state["tx_baseline"].copy(deep=True)
 
-    if not rows:
-        st.info("当前条件下没有记录。")
-        return
+            editor_df = st.data_editor(
+                editor_source,
+                use_container_width=True,
+                hide_index=True,
+                height=430,
+                key=f"tx_editor_{st.session_state.get('tx_editor_version', 0)}",
+                disabled=["记录ID"],
+                column_config={
+                    "记录ID": None,
+                    "选择": st.column_config.CheckboxColumn("选择", default=False),
+                    "时间": st.column_config.DatetimeColumn("时间", format="YYYY-MM-DD HH:mm:ss"),
+                    "来源": st.column_config.SelectboxColumn("来源", options=PLATFORMS, required=True),
+                    "收支": st.column_config.SelectboxColumn("收支", options=TRADE_TYPES, required=True),
+                    "金额": st.column_config.NumberColumn("金额", min_value=0.01, step=0.01,
+                                                             format="¥%.2f", required=True),
+                    "分类": st.column_config.TextColumn("分类"),
+                    "说明": st.column_config.TextColumn("说明"),
+                    "对方": st.column_config.TextColumn("对方"),
+                    "支付方式": st.column_config.TextColumn("支付方式"),
+                },
+            )
+            st.session_state["tx_editor_current"] = editor_df.copy(deep=True)
+            changed_rows = _get_changed_editor_rows(editor_df)
+            st.session_state["tx_dirty"] = bool(changed_rows)
+            selected_df = editor_df[editor_df["选择"].fillna(False).astype(bool)]
+            selected_count = len(selected_df)
 
-    database_df = _rows_to_editor_df(rows)
-    if st.session_state.get("tx_baseline") is None:
-        st.session_state["tx_baseline"] = database_df.copy(deep=True)
-    editor_source = st.session_state.pop("tx_editor_seed", None)
-    if editor_source is None:
-        editor_source = st.session_state["tx_baseline"].copy(deep=True)
+    with controls_slot.container(height=320, border=False):
+        # 年份、12 个月与关键词统一在一行，月份按钮使用紧凑尺寸。
+        # 每个年份/月度选项后预留 5px，视觉宽度约为年份 75px、月份 30px。
+        month_toolbar = st.columns([0.8] + [0.35] * 12 + [3.1], gap=None)
+        with month_toolbar[0]:
+            st.selectbox("年份", years, key="tx_year", format_func=lambda year: f"{year}年",
+                         on_change=_request_tx_year_change, label_visibility="collapsed")
+        for month_number, column in enumerate(month_toolbar[1:13], start=1):
+            target_month = f"{selected_year}-{month_number:02d}"
+            with column:
+                st.button(f"{month_number}月", key=f"tx_month_button_{selected_year}_{month_number}",
+                          type="primary" if target_month == selected_month else "secondary",
+                          disabled=target_month not in months, use_container_width=True,
+                          on_click=_request_tx_month_change, args=(target_month,))
+        with month_toolbar[13]:
+            st.text_input("搜索（说明/分类/对方）", key="tx_search",
+                          on_change=_request_tx_filter_change, label_visibility="collapsed",
+                          placeholder="搜索说明、分类或对方")
 
-    editor_df = st.data_editor(
-        editor_source,
-        use_container_width=True,
-        hide_index=True,
-        key=f"tx_editor_{st.session_state.get('tx_editor_version', 0)}",
-        disabled=["记录ID"],
-        column_config={
-            "记录ID": None,
-            "选择": st.column_config.CheckboxColumn("选择", default=False),
-            "时间": st.column_config.DatetimeColumn("时间", format="YYYY-MM-DD HH:mm:ss"),
-            "来源": st.column_config.SelectboxColumn("来源", options=PLATFORMS, required=True),
-            "收支": st.column_config.SelectboxColumn("收支", options=TRADE_TYPES, required=True),
-            "金额": st.column_config.NumberColumn("金额", min_value=0.01, step=0.01,
-                                                     format="¥%.2f", required=True),
-            "分类": st.column_config.TextColumn("分类"),
-            "说明": st.column_config.TextColumn("说明"),
-            "对方": st.column_config.TextColumn("对方"),
-            "支付方式": st.column_config.TextColumn("支付方式"),
-        },
-    )
-    st.session_state["tx_editor_current"] = editor_df.copy(deep=True)
-    changed_rows = _get_changed_editor_rows(editor_df)
-    st.session_state["tx_dirty"] = bool(changed_rows)
-    selected_df = editor_df[editor_df["选择"].fillna(False).astype(bool)]
-    selected_count = len(selected_df)
+        has_applied_filters = applied_filters != _empty_tx_column_filters()
+        platform_options = sorted({row["platform"] for row in base_rows if row["platform"]}
+                                  | set(st.session_state["tx_filter_platforms"]))
+        trade_type_options = sorted({row["trade_type"] for row in base_rows if row["trade_type"]}
+                                    | set(st.session_state["tx_filter_trade_types"]))
+        category_options = sorted({row["category"] for row in base_rows if row["category"]}
+                                  | set(st.session_state["tx_filter_categories"]))
+        filter_columns = st.columns([2.2, 2.0, 2.2, 1.6, 1.6, 1.1], gap="small")
+        with filter_columns[0]:
+            st.multiselect("来源", platform_options, key="tx_filter_platforms",
+                           on_change=_request_tx_column_filter_apply)
+        with filter_columns[1]:
+            st.multiselect("收支", trade_type_options, key="tx_filter_trade_types",
+                           on_change=_request_tx_column_filter_apply)
+        with filter_columns[2]:
+            st.multiselect("分类", category_options, key="tx_filter_categories",
+                           on_change=_request_tx_column_filter_apply)
+        with filter_columns[3]:
+            st.number_input("最低金额", min_value=0.0, value=None, step=0.01,
+                            format="%.2f", key="tx_filter_amount_min",
+                            on_change=_request_tx_column_filter_apply)
+        with filter_columns[4]:
+            st.number_input("最高金额", min_value=0.0, value=None, step=0.01,
+                            format="%.2f", key="tx_filter_amount_max",
+                            on_change=_request_tx_column_filter_apply)
+        with filter_columns[5]:
+            st.button("取消筛选", type="secondary", on_click=_cancel_tx_filters,
+                      use_container_width=True, key="tx_filter_toggle")
 
-    if selected_count:
-        st.caption(f"已选中 {selected_count} 行")
-    if st.session_state.get("tx_notice"):
-        st.success(st.session_state.pop("tx_notice"))
+        action_columns = st.columns(5, gap="small")
+        all_selected = editor_df is not None and selected_count == len(editor_df)
+        with action_columns[0]:
+            select_all = st.button("取消全选" if all_selected else "全选", use_container_width=True,
+                                   type="secondary", disabled=editor_df is None)
+        with action_columns[1]:
+            edit_selected = st.button("✏️ 修改选中行", type="primary" if selected_count == 1 else "secondary",
+                                      use_container_width=True, disabled=selected_count != 1)
+        with action_columns[2]:
+            save_changes = st.button("💾 保存修改", type="primary", use_container_width=True,
+                                     disabled=not changed_rows)
+        with action_columns[3]:
+            undo_changes = st.button("↩️ 撤销修改", type="primary" if changed_rows else "secondary",
+                                     use_container_width=True, disabled=not changed_rows)
+        with action_columns[4]:
+            delete_selected = st.button("🗑️ 删除选中行", use_container_width=True,
+                                        disabled=selected_count == 0 or bool(changed_rows))
 
-    all_selected = selected_count == len(editor_df)
-    select_all_label = "取消全选" if all_selected else "全选"
-    if st.button(select_all_label, use_container_width=True, type="secondary"):
+        if selected_count:
+            st.caption(f"已选中 {selected_count} 行")
+        if has_applied_filters:
+            st.caption(f"当前字段筛选：{_tx_filter_summary(applied_filters)}")
+        if st.session_state.get("tx_filter_error"):
+            st.error(st.session_state["tx_filter_error"])
+        if st.session_state.get("tx_notice"):
+            st.success(st.session_state.pop("tx_notice"))
+
+    if select_all and editor_df is not None:
         selected_editor_df = editor_df.copy(deep=True)
         selected_editor_df["选择"] = not all_selected
-        # 重建编辑器以同步所有复选框，同时保留表格中尚未保存的业务编辑。
         st.session_state["tx_editor_seed"] = selected_editor_df
         st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
         st.rerun()
-
-    edit_col, save_col, undo_col, delete_col = st.columns(4)
-    with edit_col:
-        edit_selected = st.button("✏️ 修改选中行", type="primary" if selected_count == 1 else "secondary",
-                                  use_container_width=True,
-                                  disabled=selected_count != 1)
-    with save_col:
-        save_changes = st.button("💾 保存修改", type="primary", use_container_width=True,
-                                 disabled=not changed_rows)
-    with undo_col:
-        undo_changes = st.button("↩️ 撤销修改", type="primary" if changed_rows else "secondary",
-                                 use_container_width=True,
-                                 disabled=not changed_rows)
-    with delete_col:
-        delete_selected = st.button("🗑️ 删除选中行", use_container_width=True,
-                                    disabled=selected_count == 0 or bool(changed_rows))
 
     if edit_selected:
         st.session_state["tx_single_edit_id"] = _text_value(selected_df.iloc[0]["记录ID"])
@@ -747,7 +909,6 @@ def page_transactions() -> None:
 
 
 def page_import() -> None:
-    st.title("📥 导入账单")
     if "excluded_records" not in st.session_state:
         st.session_state["excluded_records"] = []
 
@@ -839,8 +1000,6 @@ def page_import() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def page_manual() -> None:
-    st.title("✏️ 手动记账")
-
     with st.form("manual_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
