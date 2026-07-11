@@ -23,6 +23,8 @@ python -m PyInstaller `
   --add-data "app.py;." `
   --add-data "db.py;." `
   --add-data "parser.py;." `
+  --add-data "local_transaction_editor.py;." `
+  --add-data "components;components" `
   --copy-metadata streamlit `
   --copy-metadata pandas `
   --copy-metadata plotly `

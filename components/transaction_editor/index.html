@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本地流水表格</title>
+  <style>
+    :root { color-scheme: light; font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #1f2937; background: transparent; }
+    .grid { overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .toolbar { display: flex; justify-content: flex-start; gap: 8px; padding: 8px 0; background: transparent; }
+    .grid .toolbar { justify-content: flex-end; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }
+    .confirm-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; padding: 10px; border: 1px solid #fbbf24; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 13px; }
+    .grid .confirm-box { margin: 8px 10px; }
+    button { height: 34px; padding: 0 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #374151; cursor: pointer; font: inherit; }
+    button:hover:not(:disabled) { background: #f3f4f6; }
+    button:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
+    button.primary { color: #fff; border-color: #2563eb; background: #2563eb; }
+    button.danger { color: #b91c1c; border-color: #fecaca; background: #fff1f2; }
+    .table-wrap { max-height: calc(var(--grid-height) - 52px); overflow: auto; }
+    table { border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: max-content; font-size: 13px; }
+    th { position: sticky; top: 0; z-index: 2; height: 38px; background: #f8fafc; color: #374151; text-align: left; white-space: nowrap; font-weight: 600; user-select: none; }
+    th, td { overflow: hidden; border-right: 1px solid #f1f5f9; border-bottom: 1px solid #e5e7eb; vertical-align: middle; }
+    th:last-child, td:last-child { border-right: 0; }
+    tr:last-child td { border-bottom: 0; }
+    th .header-label { display: block; overflow: hidden; padding: 10px 8px; text-overflow: ellipsis; cursor: grab; }
+    th.dragging .header-label { opacity: .45; } th.drag-over { box-shadow: inset 3px 0 #2563eb; }
+    .resize { position: absolute; top: 0; right: -3px; z-index: 3; width: 7px; height: 100%; cursor: col-resize; }
+    .resize:hover, .resizing .resize { background: #93c5fd; }
+    td { height: 36px; padding: 0; white-space: nowrap; text-overflow: ellipsis; }
+    td .cell-text { display: block; overflow: hidden; padding: 9px 8px; text-overflow: ellipsis; }
+    td.focused { outline: 2px solid #2563eb; outline-offset: -2px; position: relative; z-index: 1; }
+    td.range { background: #eff6ff !important; }
+    tr.pending td { background: #fff1f2; } tr.settled td { background: #ecfdf5; }
+    .select { width: 54px; text-align: center; } .select input { width: 16px; height: 16px; cursor: pointer; }
+    input, select { width: 100%; min-width: 0; height: 35px; padding: 6px 8px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
+    input:focus, select:focus { background: #eff6ff; box-shadow: inset 0 0 0 2px #60a5fa; }
+    input[type=number] { text-align: right; } select:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
+    .empty { padding: 22px; color: #6b7280; text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="grid" class="grid"><div class="empty">正在加载流水…</div></div>
+  <script>
+    const LAYOUT_KEY = "account_book_transaction_grid_layout_v1";
+    const DATE_MODE_KEY = "account_book_transaction_grid_date_mode_v1";
+    const BASE_COLUMNS = [
+      { key: "时间", width: 170, kind: "datetime-local" }, { key: "来源", width: 90, kind: "select" },
+      { key: "收支", width: 85, kind: "select" }, { key: "金额", width: 95, kind: "number" },
+      { key: "分类", width: 120, kind: "select" }, { key: "报销状态", width: 105, kind: "select" },
+      { key: "说明", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
+      { key: "支付方式", width: 120, kind: "text" },
+    ];
+    const state = { version: null, rows: [], args: {}, mode: "view", selected: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, dateMode: null, confirmingReset: false, dragKey: null };
+    const message = (type, data = {}) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
+    const setValue = value => message("streamlit:setComponentValue", { value });
+    const setHeight = () => message("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
+    const esc = value => String(value ?? "").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+    const dateForInput = value => String(value ?? "").replace(" ", "T").slice(0, 16);
+    const dateForStore = value => value ? `${value.replace("T", " ")}${value.length === 16 ? ":00" : ""}` : "";
+    const displayTime = value => {
+      const text = String(value ?? "").replace("T", " ");
+      return state.dateMode === "date" ? text.slice(0, 10) : text.slice(0, 19);
+    };
+    const defaults = () => ({ order: BASE_COLUMNS.map(col => col.key), widths: Object.fromEntries(BASE_COLUMNS.map(col => [col.key, col.width])) });
+    const loadLayout = () => {
+      try {
+        const stored = JSON.parse(localStorage.getItem(LAYOUT_KEY));
+        const valid = new Set(BASE_COLUMNS.map(col => col.key));
+        if (!stored || !Array.isArray(stored.order) || stored.order.length !== valid.size || stored.order.some(key => !valid.has(key))) return defaults();
+        return { order: stored.order, widths: { ...defaults().widths, ...(stored.widths || {}) } };
+      } catch (_) { return defaults(); }
+    };
+    const saveLayout = () => localStorage.setItem(LAYOUT_KEY, JSON.stringify(state.layout));
+    const loadDateMode = () => localStorage.getItem(DATE_MODE_KEY) === "date" ? "date" : "datetime";
+    const saveDateMode = () => localStorage.setItem(DATE_MODE_KEY, state.dateMode);
+    const readSelection = () => {
+      try { return new Set(JSON.parse(localStorage.getItem(state.selectionKey) || "[]")); }
+      catch (_) { return new Set(); }
+    };
+    const persistSelection = () => localStorage.setItem(state.selectionKey, JSON.stringify([...state.selected]));
+    const columns = () => state.layout.order.map(key => BASE_COLUMNS.find(col => col.key === key));
+    const columnIndex = key => columns().findIndex(col => col.key === key);
+    const rowClass = row => row["分类"] !== "公费垫付" ? "" : row["报销状态"] === "待报销" ? "pending" : row["报销状态"] === "已结清" ? "settled" : "";
+    const normaliseRow = (row, field) => {
+      if (field === "收支") {
+        const allowed = row["收支"] === "收入" ? state.args.income_categories : state.args.expense_categories;
+        if (row["分类"] && !allowed.includes(row["分类"])) row["分类"] = "";
+      }
+      if (field === "收支" || field === "分类") {
+        if (row["分类"] === "公费垫付") {
+          if (!["待报销", "已结清"].includes(row["报销状态"])) row["报销状态"] = "待报销";
+        } else row["报销状态"] = "";
+      }
+    };
+    const optionsFor = (row, key) => {
+      if (key === "来源") return state.args.platforms || [];
+      if (key === "收支") return state.args.trade_types || [];
+      if (key === "分类") {
+        const categories = row["收支"] === "收入"
+          ? (state.args.income_categories || []) : (state.args.expense_categories || []);
+        return Array.from(new Set([...categories, row["分类"] || ""]));
+      }
+      if (key === "报销状态") return state.args.reimbursement_statuses || [];
+      return [];
+    };
+    const optionHtml = (values, value) => Array.from(new Set([...(values || []), value || ""])).map(item => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item || "请选择")}</option>`).join("");
+    const inRange = (row, col) => {
+      if (!state.range) return false;
+      const r1 = Math.min(state.range.start.row, state.range.end.row), r2 = Math.max(state.range.start.row, state.range.end.row);
+      const c1 = Math.min(state.range.start.col, state.range.end.col), c2 = Math.max(state.range.start.col, state.range.end.col);
+      return row >= r1 && row <= r2 && col >= c1 && col <= c2;
+    };
+    const cell = (row, rowIndex, column, colIndex) => {
+      const classes = [state.active?.row === rowIndex && state.active?.col === colIndex ? "focused" : "", inRange(rowIndex, colIndex) ? "range" : ""].filter(Boolean).join(" ");
+      if (state.mode === "view") {
+        const value = column.key === "金额" ? `¥${Number(row[column.key] || 0).toFixed(2)}` : esc(column.key === "时间" ? displayTime(row[column.key]) : row[column.key]);
+        return `<td class="${classes}" tabindex="0" data-row="${rowIndex}" data-col="${colIndex}" title="${esc(row[column.key])}"><span class="cell-text">${value}</span></td>`;
+      }
+      const value = row[column.key] ?? "";
+      const data = `data-row="${rowIndex}" data-col="${colIndex}" data-field="${column.key}"`;
+      if (column.kind === "select") {
+        const disabled = column.key === "报销状态" && row["分类"] !== "公费垫付";
+        return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(optionsFor(row, column.key), value)}</select></td>`;
+      }
+      if (column.kind === "datetime-local") return `<td class="${classes}" tabindex="0" ${data}><input type="datetime-local" step="1" value="${esc(dateForInput(value))}" ${data}></td>`;
+      if (column.kind === "number") return `<td class="${classes}" tabindex="0" ${data}><input type="number" min="0.01" step="0.01" value="${esc(value)}" ${data}></td>`;
+      return `<td class="${classes}" tabindex="0" ${data}><input type="text" value="${esc(value)}" ${data}></td>`;
+    };
+    const render = () => {
+      const root = document.getElementById("grid");
+      const previousWrap = root.querySelector(".table-wrap");
+      const previousScroll = previousWrap ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft } : null;
+      document.documentElement.style.setProperty("--grid-height", `${state.args.height || 500}px`);
+      if (state.mode === "actions") { renderActions(root); return; }
+      if (!state.rows.length) { root.innerHTML = '<div class="empty">当前没有流水。</div>'; setHeight(); return; }
+      const cols = columns();
+      const selectedCount = state.selected.size;
+      const toolbar = state.mode === "edit"
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
+      const selectHeader = state.mode === "view" ? `<th class="select"><input id="select-all" type="checkbox" aria-label="全选"></th>` : "";
+      const selectCells = (row, index) => state.mode === "view" ? `<td class="select"><input type="checkbox" data-select-id="${esc(row["记录ID"])}" ${state.selected.has(String(row["记录ID"])) ? "checked" : ""} aria-label="选择第 ${index + 1} 行"></td>` : "";
+      root.innerHTML = `${toolbar}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${state.mode === "view" ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${cols.map(col => `<th draggable="true" data-column="${col.key}"><span class="header-label">${col.key}</span><span class="resize" data-resize="${col.key}"></span></th>`).join("")}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+      bindEvents(root);
+      if (previousScroll) { const currentWrap = root.querySelector(".table-wrap"); currentWrap.scrollTop = previousScroll.top; currentWrap.scrollLeft = previousScroll.left; }
+      const all = document.getElementById("select-all");
+      if (all) { all.checked = selectedCount === state.rows.length; all.indeterminate = selectedCount > 0 && selectedCount < state.rows.length; }
+      setHeight();
+    };
+    const confirmationMarkup = () => state.confirmingReset
+      ? '<div class="confirm-box">确定要恢复默认列布局吗？当前列宽和列顺序将被清除。<button id="confirm-reset" type="button">确认恢复</button><button id="cancel-reset" type="button">取消</button></div>' : "";
+    const requestReset = () => { state.confirmingReset = true; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
+    const applyReset = () => { localStorage.removeItem(LAYOUT_KEY); state.layout = defaults(); state.confirmingReset = false; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
+    const bindResetConfirmation = root => {
+      root.querySelector("#confirm-reset")?.addEventListener("click", applyReset);
+      root.querySelector("#cancel-reset")?.addEventListener("click", () => { state.confirmingReset = false; state.mode === "actions" ? renderActions(root) : render(); });
+    };
+    const renderActions = root => {
+      state.selected = readSelection();
+      root.className = "";
+      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="begin-edit" class="primary" type="button">✏️ 修改流水</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
+      document.getElementById("reset-layout")?.addEventListener("click", requestReset);
+      document.getElementById("toggle-date")?.addEventListener("click", () => { state.dateMode = state.dateMode === "datetime" ? "date" : "datetime"; saveDateMode(); renderActions(root); });
+      document.getElementById("begin-edit")?.addEventListener("click", () => setValue({ action: "edit" }));
+      document.getElementById("delete-selected")?.addEventListener("click", () => setValue({ action: "delete", selected_ids: [...state.selected] }));
+      bindResetConfirmation(root);
+      setHeight();
+    };
+    const activate = (row, col, extend = false, focus = false) => {
+      state.active = { row, col };
+      if (!extend || !state.anchor) state.anchor = { row, col };
+      state.range = { start: state.anchor, end: { row, col } };
+      render();
+      if (focus) document.querySelector(`td[data-row="${row}"][data-col="${col}"]`)?.focus();
+    };
+    const moveActive = (rowStep, colStep) => {
+      const current = state.active || { row: 0, col: 0 };
+      const row = Math.max(0, Math.min(state.rows.length - 1, current.row + rowStep));
+      const col = Math.max(0, Math.min(columns().length - 1, current.col + colStep));
+      activate(row, col, false, true);
+    };
+    const copyRange = () => {
+      if (!state.range) return;
+      const startRow = Math.min(state.range.start.row, state.range.end.row), endRow = Math.max(state.range.start.row, state.range.end.row);
+      const startCol = Math.min(state.range.start.col, state.range.end.col), endCol = Math.max(state.range.start.col, state.range.end.col);
+      const cols = columns();
+      const text = state.rows.slice(startRow, endRow + 1).map(row => cols.slice(startCol, endCol + 1).map(col => row[col.key] ?? "").join("\t")).join("\n");
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+      } else fallbackCopy(text);
+    };
+    const fallbackCopy = text => {
+      const area = document.createElement("textarea");
+      area.value = text; area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
+    };
+    const pasteAtActive = event => {
+      if (state.mode !== "edit" || !state.active) return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (!text) return;
+      event.preventDefault();
+      const matrix = text.replace(/\r/g, "").split("\n").filter((_, index, list) => index < list.length - 1 || list[index] !== "").map(line => line.split("\t"));
+      const cols = columns();
+      matrix.forEach((values, rowOffset) => values.forEach((value, colOffset) => {
+        const row = state.active.row + rowOffset, col = state.active.col + colOffset;
+        if (!state.rows[row] || !cols[col]) return;
+        const key = cols[col].key;
+        state.rows[row][key] = key === "时间" ? dateForStore(value) : value;
+        normaliseRow(state.rows[row], key);
+      }));
+      render();
+    };
+    const resizeColumn = (key, event) => {
+      event.preventDefault(); event.stopPropagation();
+      const startX = event.clientX, start = state.layout.widths[key];
+      document.body.classList.add("resizing");
+      const move = moveEvent => { state.layout.widths[key] = Math.max(70, start + moveEvent.clientX - startX); render(); };
+      const up = () => { document.body.classList.remove("resizing"); saveLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+      window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    };
+    const bindEvents = root => {
+      root.querySelectorAll(".resize").forEach(handle => handle.addEventListener("pointerdown", event => resizeColumn(handle.dataset.resize, event)));
+      root.querySelectorAll("th[data-column]").forEach(header => {
+        header.addEventListener("dragstart", () => { state.dragKey = header.dataset.column; header.classList.add("dragging"); });
+        header.addEventListener("dragend", () => { state.dragKey = null; header.classList.remove("dragging"); root.querySelectorAll("th").forEach(item => item.classList.remove("drag-over")); });
+        header.addEventListener("dragover", event => { event.preventDefault(); header.classList.add("drag-over"); });
+        header.addEventListener("dragleave", () => header.classList.remove("drag-over"));
+        header.addEventListener("drop", event => { event.preventDefault(); const target = header.dataset.column; if (state.dragKey && target !== state.dragKey) { const order = state.layout.order.filter(key => key !== state.dragKey); order.splice(order.indexOf(target), 0, state.dragKey); state.layout.order = order; saveLayout(); } render(); });
+      });
+      document.getElementById("reset-layout")?.addEventListener("click", requestReset);
+      bindResetConfirmation(root);
+      document.getElementById("save")?.addEventListener("click", () => setValue({ action: "save", rows: state.rows }));
+      document.getElementById("cancel")?.addEventListener("click", () => setValue({ action: "cancel", rows: state.rows }));
+      document.getElementById("select-all")?.addEventListener("change", event => { state.selected = event.target.checked ? new Set(state.rows.map(row => String(row["记录ID"]))) : new Set(); persistSelection(); render(); });
+      root.querySelector("tbody")?.addEventListener("change", event => {
+        const control = event.target;
+        if (control.dataset.selectId) { control.checked ? state.selected.add(control.dataset.selectId) : state.selected.delete(control.dataset.selectId); persistSelection(); render(); return; }
+        const row = Number(control.dataset.row), col = Number(control.dataset.col), field = control.dataset.field;
+        if (!Number.isInteger(row) || !Number.isInteger(col) || !field) return;
+        state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
+        normaliseRow(state.rows[row], field); activate(row, col);
+      });
+      root.querySelector("tbody")?.addEventListener("input", event => {
+        const control = event.target, row = Number(control.dataset.row), field = control.dataset.field;
+        if (state.mode === "edit" && Number.isInteger(row) && field) state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
+      });
+      root.querySelector("tbody")?.addEventListener("click", event => {
+        const td = event.target.closest("td[data-row]"); if (!td) return;
+        if (state.mode === "edit" && event.target.matches("input,select")) {
+          state.active = { row: Number(td.dataset.row), col: Number(td.dataset.col) };
+          if (!event.shiftKey || !state.anchor) state.anchor = state.active;
+          state.range = { start: state.anchor, end: state.active };
+          return;
+        }
+        activate(Number(td.dataset.row), Number(td.dataset.col), event.shiftKey);
+      });
+      root.addEventListener("keydown", event => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") { copyRange(); return; }
+        const isControl = ["INPUT", "SELECT"].includes(event.target.tagName);
+        if (event.key === "Tab") { event.preventDefault(); moveActive(0, event.shiftKey ? -1 : 1); return; }
+        if (!isControl && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); moveActive(event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0, event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0); }
+      });
+      root.addEventListener("paste", pasteAtActive);
+    };
+    window.addEventListener("storage", event => {
+      if (event.key === state.selectionKey && state.mode === "actions") render();
+      if (event.key === LAYOUT_KEY && state.mode !== "actions") { state.layout = loadLayout(); render(); }
+      if (event.key === DATE_MODE_KEY) { state.dateMode = loadDateMode(); render(); }
+    });
+    window.addEventListener("message", event => {
+      const data = event.data; if (!data || data.type !== "streamlit:render") return;
+      const args = data.args || {};
+      state.selectionKey = args.selection_key || "tx_selection";
+      if (state.version !== args.version) {
+        state.version = args.version; state.rows = JSON.parse(JSON.stringify(args.rows || [])); state.selected = new Set();
+        state.active = null; state.anchor = null; state.range = null;
+        if (args.mode === "view") persistSelection();
+      }
+      state.args = args; state.mode = args.mode || "view"; state.layout = state.layout || loadLayout(); state.dateMode = state.dateMode || loadDateMode(); render();
+    });
+    message("streamlit:componentReady", { apiVersion: 1 });
+  </script>
+</body>
+</html>
