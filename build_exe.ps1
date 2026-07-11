@@ -28,8 +28,10 @@ python -m PyInstaller `
   --copy-metadata streamlit `
   --copy-metadata pandas `
   --copy-metadata plotly `
+  --copy-metadata matplotlib `
   --copy-metadata altair `
   --copy-metadata pyarrow `
+  --collect-data matplotlib `
   launcher.py
 
 Write-Host ""

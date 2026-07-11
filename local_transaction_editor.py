@@ -26,6 +26,7 @@ def transaction_editor(
     expense_categories: list[str],
     income_categories: list[str],
     reimbursement_statuses: list[str],
+    life_tags: list[str],
     height: int = 600,
     key: str | None = None,
 ) -> dict[str, Any] | None:
@@ -39,6 +40,7 @@ def transaction_editor(
         expense_categories=expense_categories,
         income_categories=income_categories,
         reimbursement_statuses=reimbursement_statuses,
+        life_tags=life_tags,
         height=height,
         default=None,
         key=key,
@@ -59,6 +61,29 @@ def transaction_viewer(
         rows=rows,
         version=version,
         selection_key=selection_key,
+        height=height,
+        default=None,
+        key=key,
+    )
+
+
+def yearly_category_viewer(
+    *,
+    rows: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    version: int,
+    year: str,
+    height: int = 500,
+    key: str | None = None,
+) -> None:
+    """渲染年度分类支出只读汇总表。"""
+    _COMPONENT(
+        mode="yearly-summary",
+        rows=rows,
+        columns=columns,
+        version=version,
+        year=year,
+        summary_first_key=columns[0]["key"] if columns else "",
         height=height,
         default=None,
         key=key,

@@ -34,6 +34,8 @@
     td.range { background: #eff6ff !important; }
     tr.pending td { background: #fff1f2; } tr.settled td { background: #ecfdf5; }
     .select { width: 54px; text-align: center; } .select input { width: 16px; height: 16px; cursor: pointer; }
+    th.summary-first { left: 0; z-index: 4; box-shadow: 1px 0 0 #e5e7eb; }
+    td.summary-first { position: sticky; left: 0; z-index: 1; background: #fff; box-shadow: 1px 0 0 #e5e7eb; }
     input, select { width: 100%; min-width: 0; height: 35px; padding: 6px 8px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
     input:focus, select:focus { background: #eff6ff; box-shadow: inset 0 0 0 2px #60a5fa; }
     input[type=number] { text-align: right; } select:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
@@ -44,15 +46,16 @@
   <div id="grid" class="grid"><div class="empty">正在加载流水…</div></div>
   <script>
     const LAYOUT_KEY = "account_book_transaction_grid_layout_v1";
+    const SUMMARY_LAYOUT_KEY_PREFIX = "account_book_yearly_category_grid_layout_";
     const DATE_MODE_KEY = "account_book_transaction_grid_date_mode_v1";
     const BASE_COLUMNS = [
       { key: "时间", width: 170, kind: "datetime-local" }, { key: "来源", width: 90, kind: "select" },
       { key: "收支", width: 85, kind: "select" }, { key: "金额", width: 95, kind: "number" },
-      { key: "分类", width: 120, kind: "select" }, { key: "报销状态", width: 105, kind: "select" },
+      { key: "分类", width: 120, kind: "select" }, { key: "标签", width: 110, kind: "select" }, { key: "报销状态", width: 105, kind: "select" },
       { key: "说明", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
       { key: "支付方式", width: 120, kind: "text" },
     ];
-    const state = { version: null, rows: [], args: {}, mode: "view", selected: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, dateMode: null, confirmingReset: false, dragKey: null };
+    const state = { version: null, rows: [], args: {}, mode: "view", selected: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, tagging: false, dragKey: null };
     const message = (type, data = {}) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
     const setValue = value => message("streamlit:setComponentValue", { value });
     const setHeight = () => message("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
@@ -63,16 +66,21 @@
       const text = String(value ?? "").replace("T", " ");
       return state.dateMode === "date" ? text.slice(0, 10) : text.slice(0, 19);
     };
-    const defaults = () => ({ order: BASE_COLUMNS.map(col => col.key), widths: Object.fromEntries(BASE_COLUMNS.map(col => [col.key, col.width])) });
+    const baseColumns = () => state.mode === "yearly-summary" ? (state.args.columns || []) : BASE_COLUMNS;
+    const currentLayoutKey = () => state.mode === "yearly-summary"
+      ? `${SUMMARY_LAYOUT_KEY_PREFIX}${state.args.year || "default"}_v1` : LAYOUT_KEY;
+    const summaryFirstKey = () => state.args.summary_first_key || "";
+    const layoutSignature = () => `${currentLayoutKey()}:${baseColumns().map(col => col.key).join("|")}`;
+    const defaults = () => ({ order: baseColumns().map(col => col.key), widths: Object.fromEntries(baseColumns().map(col => [col.key, col.width || 100])) });
     const loadLayout = () => {
       try {
-        const stored = JSON.parse(localStorage.getItem(LAYOUT_KEY));
-        const valid = new Set(BASE_COLUMNS.map(col => col.key));
+        const stored = JSON.parse(localStorage.getItem(currentLayoutKey()));
+        const valid = new Set(baseColumns().map(col => col.key));
         if (!stored || !Array.isArray(stored.order) || stored.order.length !== valid.size || stored.order.some(key => !valid.has(key))) return defaults();
         return { order: stored.order, widths: { ...defaults().widths, ...(stored.widths || {}) } };
       } catch (_) { return defaults(); }
     };
-    const saveLayout = () => localStorage.setItem(LAYOUT_KEY, JSON.stringify(state.layout));
+    const saveLayout = () => localStorage.setItem(currentLayoutKey(), JSON.stringify(state.layout));
     const loadDateMode = () => localStorage.getItem(DATE_MODE_KEY) === "date" ? "date" : "datetime";
     const saveDateMode = () => localStorage.setItem(DATE_MODE_KEY, state.dateMode);
     const readSelection = () => {
@@ -80,7 +88,7 @@
       catch (_) { return new Set(); }
     };
     const persistSelection = () => localStorage.setItem(state.selectionKey, JSON.stringify([...state.selected]));
-    const columns = () => state.layout.order.map(key => BASE_COLUMNS.find(col => col.key === key));
+    const columns = () => state.layout.order.map(key => baseColumns().find(col => col.key === key));
     const columnIndex = key => columns().findIndex(col => col.key === key);
     const rowClass = row => row["分类"] !== "公费垫付" ? "" : row["报销状态"] === "待报销" ? "pending" : row["报销状态"] === "已结清" ? "settled" : "";
     const normaliseRow = (row, field) => {
@@ -93,6 +101,7 @@
           if (!["待报销", "已结清"].includes(row["报销状态"])) row["报销状态"] = "待报销";
         } else row["报销状态"] = "";
       }
+      if (row["收支"] !== "支出") row["标签"] = "";
     };
     const optionsFor = (row, key) => {
       if (key === "来源") return state.args.platforms || [];
@@ -103,6 +112,7 @@
         return Array.from(new Set([...categories, row["分类"] || ""]));
       }
       if (key === "报销状态") return state.args.reimbursement_statuses || [];
+      if (key === "标签") return state.args.life_tags || [];
       return [];
     };
     const optionHtml = (values, value) => Array.from(new Set([...(values || []), value || ""])).map(item => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item || "请选择")}</option>`).join("");
@@ -114,14 +124,21 @@
     };
     const cell = (row, rowIndex, column, colIndex) => {
       const classes = [state.active?.row === rowIndex && state.active?.col === colIndex ? "focused" : "", inRange(rowIndex, colIndex) ? "range" : ""].filter(Boolean).join(" ");
-      if (state.mode === "view") {
-        const value = column.key === "金额" ? `¥${Number(row[column.key] || 0).toFixed(2)}` : esc(column.key === "时间" ? displayTime(row[column.key]) : row[column.key]);
-        return `<td class="${classes}" tabindex="0" data-row="${rowIndex}" data-col="${colIndex}" title="${esc(row[column.key])}"><span class="cell-text">${value}</span></td>`;
+      if (state.mode === "view" || state.mode === "yearly-summary") {
+        const isSummary = state.mode === "yearly-summary";
+        const value = isSummary && column.kind === "money"
+          ? `¥${Number(row[column.key] || 0).toFixed(2)}`
+          : column.key === "金额" ? `¥${Number(row[column.key] || 0).toFixed(2)}` : esc(column.key === "时间" ? displayTime(row[column.key]) : row[column.key]);
+        const heatColour = isSummary ? row.__heat_colours?.[column.key] : "";
+        const firstClass = isSummary && column.key === summaryFirstKey() ? " summary-first" : "";
+        const style = heatColour ? ` style="background:${esc(heatColour)}"` : "";
+        return `<td class="${classes}${firstClass}"${style} tabindex="0" data-row="${rowIndex}" data-col="${colIndex}" title="${esc(row[column.key])}"><span class="cell-text">${value}</span></td>`;
       }
       const value = row[column.key] ?? "";
       const data = `data-row="${rowIndex}" data-col="${colIndex}" data-field="${column.key}"`;
       if (column.kind === "select") {
-        const disabled = column.key === "报销状态" && row["分类"] !== "公费垫付";
+        const disabled = (column.key === "报销状态" && row["分类"] !== "公费垫付")
+          || (column.key === "标签" && row["收支"] !== "支出");
         return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(optionsFor(row, column.key), value)}</select></td>`;
       }
       if (column.kind === "datetime-local") return `<td class="${classes}" tabindex="0" ${data}><input type="datetime-local" step="1" value="${esc(dateForInput(value))}" ${data}></td>`;
@@ -134,14 +151,22 @@
       const previousScroll = previousWrap ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft } : null;
       document.documentElement.style.setProperty("--grid-height", `${state.args.height || 500}px`);
       if (state.mode === "actions") { renderActions(root); return; }
-      if (!state.rows.length) { root.innerHTML = '<div class="empty">当前没有流水。</div>'; setHeight(); return; }
+      if (!state.rows.length) { root.innerHTML = `<div class="empty">${state.mode === "yearly-summary" ? "当前年度没有支出记录。" : "当前没有流水。"}</div>`; setHeight(); return; }
       const cols = columns();
       const selectedCount = state.selected.size;
       const toolbar = state.mode === "edit"
-        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
-      const selectHeader = state.mode === "view" ? `<th class="select"><input id="select-all" type="checkbox" aria-label="全选"></th>` : "";
-      const selectCells = (row, index) => state.mode === "view" ? `<td class="select"><input type="checkbox" data-select-id="${esc(row["记录ID"])}" ${state.selected.has(String(row["记录ID"])) ? "checked" : ""} aria-label="选择第 ${index + 1} 行"></td>` : "";
-      root.innerHTML = `${toolbar}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${state.mode === "view" ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${cols.map(col => `<th draggable="true" data-column="${col.key}"><span class="header-label">${col.key}</span><span class="resize" data-resize="${col.key}"></span></th>`).join("")}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="set-life-tag" type="button" ${selectedCount ? "" : "disabled"}>设置标签</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
+      const summaryToolbar = state.mode === "yearly-summary"
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button></div>` : "";
+      const selectable = state.mode === "view" || state.mode === "edit";
+      const selectHeader = selectable ? `<th class="select"><input id="select-all" type="checkbox" aria-label="全选"></th>` : "";
+      const selectCells = (row, index) => selectable ? `<td class="select"><input type="checkbox" data-select-id="${esc(row["记录ID"])}" ${state.selected.has(String(row["记录ID"])) ? "checked" : ""} aria-label="选择第 ${index + 1} 行"></td>` : "";
+      const headerCells = cols.map(col => {
+        const firstClass = state.mode === "yearly-summary" && col.key === summaryFirstKey() ? " summary-first" : "";
+        const draggable = state.mode !== "yearly-summary" || col.key !== summaryFirstKey();
+        return `<th class="${firstClass}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${col.key}</span><span class="resize" data-resize="${col.key}"></span></th>`;
+      }).join("");
+      root.innerHTML = `${toolbar}${summaryToolbar}${lifeTagMarkup()}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
       bindEvents(root);
       if (previousScroll) { const currentWrap = root.querySelector(".table-wrap"); currentWrap.scrollTop = previousScroll.top; currentWrap.scrollLeft = previousScroll.left; }
       const all = document.getElementById("select-all");
@@ -150,8 +175,10 @@
     };
     const confirmationMarkup = () => state.confirmingReset
       ? '<div class="confirm-box">确定要恢复默认列布局吗？当前列宽和列顺序将被清除。<button id="confirm-reset" type="button">确认恢复</button><button id="cancel-reset" type="button">取消</button></div>' : "";
+    const lifeTagMarkup = () => state.tagging
+      ? `<div class="confirm-box">将为已勾选的支出设置标签；收入会自动跳过。<select id="life-tag-value">${optionHtml(state.args.life_tags || [], "")}</select><button id="confirm-life-tag" type="button">确认设置</button><button id="cancel-life-tag" type="button">取消</button></div>` : "";
     const requestReset = () => { state.confirmingReset = true; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
-    const applyReset = () => { localStorage.removeItem(LAYOUT_KEY); state.layout = defaults(); state.confirmingReset = false; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
+    const applyReset = () => { localStorage.removeItem(currentLayoutKey()); state.layout = defaults(); state.confirmingReset = false; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
     const bindResetConfirmation = root => {
       root.querySelector("#confirm-reset")?.addEventListener("click", applyReset);
       root.querySelector("#cancel-reset")?.addEventListener("click", () => { state.confirmingReset = false; state.mode === "actions" ? renderActions(root) : render(); });
@@ -221,21 +248,31 @@
     };
     const bindEvents = root => {
       root.querySelectorAll(".resize").forEach(handle => handle.addEventListener("pointerdown", event => resizeColumn(handle.dataset.resize, event)));
-      root.querySelectorAll("th[data-column]").forEach(header => {
+      root.querySelectorAll('th[data-column][draggable="true"]').forEach(header => {
         header.addEventListener("dragstart", () => { state.dragKey = header.dataset.column; header.classList.add("dragging"); });
         header.addEventListener("dragend", () => { state.dragKey = null; header.classList.remove("dragging"); root.querySelectorAll("th").forEach(item => item.classList.remove("drag-over")); });
         header.addEventListener("dragover", event => { event.preventDefault(); header.classList.add("drag-over"); });
         header.addEventListener("dragleave", () => header.classList.remove("drag-over"));
-        header.addEventListener("drop", event => { event.preventDefault(); const target = header.dataset.column; if (state.dragKey && target !== state.dragKey) { const order = state.layout.order.filter(key => key !== state.dragKey); order.splice(order.indexOf(target), 0, state.dragKey); state.layout.order = order; saveLayout(); } render(); });
+        header.addEventListener("drop", event => { event.preventDefault(); const target = header.dataset.column; if (state.mode === "yearly-summary" && (state.dragKey === summaryFirstKey() || target === summaryFirstKey())) return; if (state.dragKey && target !== state.dragKey) { const order = state.layout.order.filter(key => key !== state.dragKey); order.splice(order.indexOf(target), 0, state.dragKey); state.layout.order = order; saveLayout(); } render(); });
       });
       document.getElementById("reset-layout")?.addEventListener("click", requestReset);
       bindResetConfirmation(root);
       document.getElementById("save")?.addEventListener("click", () => setValue({ action: "save", rows: state.rows }));
       document.getElementById("cancel")?.addEventListener("click", () => setValue({ action: "cancel", rows: state.rows }));
-      document.getElementById("select-all")?.addEventListener("change", event => { state.selected = event.target.checked ? new Set(state.rows.map(row => String(row["记录ID"]))) : new Set(); persistSelection(); render(); });
+      document.getElementById("set-life-tag")?.addEventListener("click", () => { state.tagging = true; render(); });
+      document.getElementById("confirm-life-tag")?.addEventListener("click", () => {
+        const lifeTag = document.getElementById("life-tag-value")?.value || "";
+        state.rows.forEach(row => {
+          if (state.selected.has(String(row["记录ID"])) && row["收支"] === "支出") row["标签"] = lifeTag;
+        });
+        state.tagging = false;
+        render();
+      });
+      document.getElementById("cancel-life-tag")?.addEventListener("click", () => { state.tagging = false; render(); });
+      document.getElementById("select-all")?.addEventListener("change", event => { state.selected = event.target.checked ? new Set(state.rows.map(row => String(row["记录ID"]))) : new Set(); if (state.mode === "view") persistSelection(); render(); });
       root.querySelector("tbody")?.addEventListener("change", event => {
         const control = event.target;
-        if (control.dataset.selectId) { control.checked ? state.selected.add(control.dataset.selectId) : state.selected.delete(control.dataset.selectId); persistSelection(); render(); return; }
+        if (control.dataset.selectId) { control.checked ? state.selected.add(control.dataset.selectId) : state.selected.delete(control.dataset.selectId); if (state.mode === "view") persistSelection(); render(); return; }
         const row = Number(control.dataset.row), col = Number(control.dataset.col), field = control.dataset.field;
         if (!Number.isInteger(row) || !Number.isInteger(col) || !field) return;
         state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
@@ -265,7 +302,7 @@
     };
     window.addEventListener("storage", event => {
       if (event.key === state.selectionKey && state.mode === "actions") render();
-      if (event.key === LAYOUT_KEY && state.mode !== "actions") { state.layout = loadLayout(); render(); }
+      if (event.key === currentLayoutKey() && state.mode !== "actions") { state.layout = loadLayout(); render(); }
       if (event.key === DATE_MODE_KEY) { state.dateMode = loadDateMode(); render(); }
     });
     window.addEventListener("message", event => {
@@ -274,10 +311,13 @@
       state.selectionKey = args.selection_key || "tx_selection";
       if (state.version !== args.version) {
         state.version = args.version; state.rows = JSON.parse(JSON.stringify(args.rows || [])); state.selected = new Set();
-        state.active = null; state.anchor = null; state.range = null;
+        state.active = null; state.anchor = null; state.range = null; state.tagging = false;
         if (args.mode === "view") persistSelection();
       }
-      state.args = args; state.mode = args.mode || "view"; state.layout = state.layout || loadLayout(); state.dateMode = state.dateMode || loadDateMode(); render();
+      state.args = args; state.mode = args.mode || "view";
+      const signature = layoutSignature();
+      if (state.layoutSignature !== signature) { state.layout = loadLayout(); state.layoutSignature = signature; }
+      state.dateMode = state.dateMode || loadDateMode(); render();
     });
     message("streamlit:componentReady", { apiVersion: 1 });
   </script>

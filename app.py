@@ -9,6 +9,7 @@ from datetime import date, datetime
 from io import BytesIO
 import math
 
+from matplotlib import colormaps, colors
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -16,7 +17,12 @@ import streamlit as st
 import time
 
 import db
-from local_transaction_editor import transaction_actions, transaction_editor, transaction_viewer
+from local_transaction_editor import (
+    transaction_actions,
+    transaction_editor,
+    transaction_viewer,
+    yearly_category_viewer,
+)
 import parser as p
 
 # ── 页面配置 ─────────────────────────────────────────────────────────
@@ -74,6 +80,7 @@ INCOME_CATEGORIES = [
 PUBLIC_EXPENSE_CATEGORY = "公费垫付"
 REIMBURSEMENT_CATEGORY = "垫付报销"
 REIMBURSEMENT_STATUSES = ["", "待报销", "已结清"]
+LIFE_TAGS = ["生存刚需", "品质生活", "自我投资"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -88,7 +95,7 @@ def _format_money(value: float) -> str:
 
 
 # ── 流水列表编辑辅助 ──────────────────────────────────────────────────
-TX_EDITOR_COLUMNS = ["时间", "来源", "收支", "金额", "分类", "报销状态", "说明", "对方", "支付方式"]
+TX_EDITOR_COLUMNS = ["时间", "来源", "收支", "金额", "分类", "标签", "报销状态", "说明", "对方", "支付方式"]
 
 
 def _reset_tx_editor() -> None:
@@ -130,6 +137,7 @@ def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFr
         trade_type = _text_value(row["收支"])
         category = _text_value(row["分类"])
         status = _text_value(row.get("报销状态", ""))
+        life_tag = _text_value(row.get("标签", ""))
         original = baseline_by_id.get(transaction_id)
         original_trade_type = _text_value(original["收支"]) if original is not None else trade_type
         if trade_type != original_trade_type and category not in _categories_for_trade_type(trade_type):
@@ -140,8 +148,11 @@ def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFr
                 status = "待报销"
         else:
             status = ""
+        if trade_type != "支出" or life_tag not in LIFE_TAGS:
+            life_tag = ""
 
         normalised.at[index, "分类"] = category
+        normalised.at[index, "标签"] = life_tag
         normalised.at[index, "报销状态"] = status
     return normalised
 
@@ -230,6 +241,7 @@ def _rows_to_editor_df(rows: list[dict]) -> pd.DataFrame:
             "收支": row["trade_type"] or "",
             "金额": abs(float(row["amount"])),
             "分类": row["category"] or "",
+            "标签": row.get("life_tag", "") or "",
             "报销状态": row.get("reimbursement_status", "") or "",
             "说明": row["description"] or "",
             "对方": row["counterparty"] or "",
@@ -264,6 +276,7 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         raise ValueError("金额必须大于 0")
 
     category = _text_value(row["分类"])
+    life_tag = _text_value(row.get("标签", ""))
     reimbursement_status = _text_value(row.get("报销状态", ""))
     if category == PUBLIC_EXPENSE_CATEGORY and trade_type != "支出":
         raise ValueError("公费垫付只能归入支出")
@@ -273,6 +286,10 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         reimbursement_status = ""
     elif reimbursement_status not in ("待报销", "已结清"):
         reimbursement_status = "待报销"
+    if trade_type != "支出":
+        life_tag = ""
+    elif life_tag not in ("", *LIFE_TAGS):
+        raise ValueError("标签必须为空、生存刚需、品质生活或自我投资")
 
     return {
         "id": _text_value(row["记录ID"]),
@@ -281,6 +298,7 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         "trade_type": trade_type,
         "amount": amount if trade_type == "收入" else -amount,
         "category": category,
+        "life_tag": life_tag,
         "reimbursement_status": reimbursement_status,
         "description": _text_value(row["说明"]),
         "counterparty": _text_value(row["对方"]),
@@ -293,7 +311,7 @@ def _row_signature(row: pd.Series) -> tuple:
     try:
         values = _editor_row_to_db(row)
         return tuple(values[column] for column in (
-            "trade_time", "platform", "trade_type", "amount", "category",
+            "trade_time", "platform", "trade_type", "amount", "category", "life_tag",
             "reimbursement_status", "description", "counterparty", "payment_channel",
         ))
     except ValueError:
@@ -306,6 +324,7 @@ def _row_signature(row: pd.Series) -> tuple:
             _text_value(row.get("收支", "")),
             _text_value(row.get("金额", "")),
             _text_value(row.get("分类", "")),
+            _text_value(row.get("标签", "")),
             _text_value(row.get("报销状态", "")),
             _text_value(row.get("说明", "")),
             _text_value(row.get("对方", "")),
@@ -358,6 +377,7 @@ def _save_editor_changes() -> tuple[bool, str]:
                 trade_type=values["trade_type"],
                 amount=values["amount"],
                 category=values["category"],
+                life_tag=values["life_tag"],
                 reimbursement_status=values["reimbursement_status"],
                 description=values["description"],
                 counterparty=values["counterparty"],
@@ -594,6 +614,13 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 "报销状态", REIMBURSEMENT_STATUSES,
                 index=REIMBURSEMENT_STATUSES.index(_text_value(row.get("报销状态", ""))),
             )
+            current_life_tag = _text_value(row.get("标签", ""))
+            tag_options = ["", *LIFE_TAGS]
+            life_tag = st.selectbox(
+                "标签", tag_options,
+                index=tag_options.index(current_life_tag) if current_life_tag in tag_options else 0,
+                disabled=trade_type != "支出",
+            )
         description = st.text_input("说明", value=_text_value(row["说明"]))
         counterparty = st.text_input("交易对方", value=_text_value(row["对方"]))
         payment_channel = st.text_input("支付方式", value=_text_value(row["支付方式"]))
@@ -614,6 +641,8 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             reimbursement_status = reimbursement_status or "待报销"
         else:
             reimbursement_status = ""
+        if trade_type != "支出":
+            life_tag = ""
         values = {
             "id": _text_value(row["记录ID"]),
             "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -621,6 +650,7 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             "trade_type": trade_type,
             "amount": amount if trade_type == "收入" else -amount,
             "category": category.strip(),
+            "life_tag": life_tag,
             "reimbursement_status": reimbursement_status,
             "description": description.strip(),
             "counterparty": counterparty.strip(),
@@ -631,7 +661,8 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 values["id"],
                 trade_time=values["trade_time"], platform=values["platform"],
                 trade_type=values["trade_type"], amount=values["amount"],
-                category=values["category"], reimbursement_status=values["reimbursement_status"],
+                category=values["category"], life_tag=values["life_tag"],
+                reimbursement_status=values["reimbursement_status"],
                 description=values["description"],
                 counterparty=values["counterparty"], payment_channel=values["payment_channel"],
             )
@@ -651,6 +682,7 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 frame.at[idx, "收支"] = values["trade_type"]
                 frame.at[idx, "金额"] = abs(values["amount"])
                 frame.at[idx, "分类"] = values["category"]
+                frame.at[idx, "标签"] = values["life_tag"]
                 frame.at[idx, "报销状态"] = values["reimbursement_status"]
                 frame.at[idx, "说明"] = values["description"]
                 frame.at[idx, "对方"] = values["counterparty"]
@@ -746,6 +778,60 @@ def _render_monthly_trend() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _render_yearly_category_table(year: str) -> None:
+    """渲染全年各支出分类的月度金额热力表。"""
+    stats = db.get_yearly_category_stats(year)
+    categories = [category for category in EXPENSE_CATEGORIES
+                  if category not in {PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY}]
+    month_columns = list(range(1, 13))
+
+    if stats:
+        frame = pd.DataFrame(stats)
+        pivot = frame.pivot_table(
+            index="category", columns="month", values="total", aggfunc="sum", fill_value=0
+        )
+    else:
+        pivot = pd.DataFrame(index=categories)
+
+    pivot = pivot.reindex(index=categories, columns=month_columns, fill_value=0).fillna(0)
+    maximum = float(pivot.to_numpy().max()) if not pivot.empty else 0.0
+    colour_map = colormaps["Reds"]
+    normalizer = colors.Normalize(vmin=0, vmax=maximum) if maximum > 0 else None
+    columns = [
+        {"key": "支出类型", "width": 140, "kind": "text"},
+        *[
+            {"key": f"{month}月", "width": 98, "kind": "money"}
+            for month in month_columns
+        ],
+    ]
+    rows = []
+    for category in categories:
+        row = {"支出类型": category, "__heat_colours": {}}
+        for month in month_columns:
+            column = f"{month}月"
+            amount = float(pivot.at[category, month])
+            row[column] = amount
+            if amount > 0 and normalizer is not None:
+                colour_value = 0.25 + normalizer(amount) * 0.7
+                row["__heat_colours"][column] = colors.to_hex(colour_map(colour_value))
+        rows.append(row)
+    st.subheader(f"{year} 年度分类支出汇总")
+    yearly_category_viewer(
+        rows=rows,
+        columns=columns,
+        version=hash((
+            year,
+            tuple(
+                (row["支出类型"], *(row[f"{month}月"] for month in month_columns))
+                for row in rows
+            ),
+        )),
+        year=year,
+        height=470,
+        key=f"yearly_category_viewer_{year}",
+    )
+
+
 def _render_category_pie(month: str) -> None:
     """本月支出分类饼图（数据由 SQL 聚合）。"""
     stats = db.get_monthly_category_stats(month)
@@ -835,6 +921,9 @@ def page_dashboard() -> None:
     st.divider()
     _render_monthly_trend()
 
+    st.divider()
+    _render_yearly_category_table(selected_year)
+
     col1, col2 = st.columns(2)
     with col1:
         _render_category_pie(selected_month)
@@ -908,6 +997,7 @@ def _save_tx_bulk_edits(editor_df: pd.DataFrame, baseline: pd.DataFrame) -> tupl
                 values["id"], trade_time=values["trade_time"],
                 platform=values["platform"], trade_type=values["trade_type"],
                 amount=values["amount"], category=values["category"],
+                life_tag=values["life_tag"],
                 reimbursement_status=values["reimbursement_status"],
                 description=values["description"], counterparty=values["counterparty"],
                 payment_channel=values["payment_channel"],
@@ -988,6 +1078,7 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame) -> None:
         expense_categories=EXPENSE_CATEGORIES,
         income_categories=INCOME_CATEGORIES,
         reimbursement_statuses=REIMBURSEMENT_STATUSES,
+        life_tags=LIFE_TAGS,
         height=600,
         key=f"tx_bulk_editor_{version}",
     )
@@ -1274,6 +1365,11 @@ def page_manual() -> None:
         with col2:
             platform = st.selectbox("来源", PLATFORMS)
             category = st.selectbox("分类", category_options, key="manual_category")
+            life_tag = st.selectbox(
+                "标签", ["", *LIFE_TAGS],
+                disabled=trade_type != "支出",
+                key="manual_life_tag",
+            )
         description = st.text_input("说明", placeholder="例如：午餐、地铁通勤...")
         counterparty = st.text_input("交易对方", placeholder="例如：美团、滴滴...")
         payment_channel = st.text_input("支付方式", placeholder="例如：余额宝、零钱通...")
@@ -1287,6 +1383,7 @@ def page_manual() -> None:
                     trade_type=trade_type,
                     amount=amount,
                     category=category,
+                    life_tag=life_tag,
                     description=description,
                     counterparty=counterparty,
                     payment_channel=payment_channel,

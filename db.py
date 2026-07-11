@@ -46,7 +46,8 @@ def init_db() -> None:
                 counterparty TEXT NOT NULL DEFAULT '',
                 payment_channel TEXT NOT NULL DEFAULT '',
                 import_hash TEXT UNIQUE NOT NULL,
-                reimbursement_status TEXT NOT NULL DEFAULT ''
+                reimbursement_status TEXT NOT NULL DEFAULT '',
+                life_tag TEXT NOT NULL DEFAULT ''
             )"""
         )
         conn.execute(
@@ -62,6 +63,10 @@ def init_db() -> None:
         if "reimbursement_status" not in columns:
             conn.execute(
                 "ALTER TABLE transactions ADD COLUMN reimbursement_status TEXT NOT NULL DEFAULT ''"
+            )
+        if "life_tag" not in columns:
+            conn.execute(
+                "ALTER TABLE transactions ADD COLUMN life_tag TEXT NOT NULL DEFAULT ''"
             )
 
 
@@ -110,8 +115,8 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                     """INSERT OR IGNORE INTO transactions
                        (id, trade_time, platform, trade_type, amount,
                         category, description, counterparty, payment_channel,
-                        import_hash, reimbursement_status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        import_hash, reimbursement_status, life_tag)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(uuid.uuid4()),
                         row["trade_time"],
@@ -124,6 +129,7 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                         row.get("payment_channel", ""),
                         row["import_hash"],
                         row.get("reimbursement_status", ""),
+                        row.get("life_tag", ""),
                     ),
                 )
                 if cursor.rowcount > 0:
@@ -152,6 +158,7 @@ def update_transaction(
     counterparty: Optional[str] = None,
     payment_channel: Optional[str] = None,
     reimbursement_status: Optional[str] = None,
+    life_tag: Optional[str] = None,
 ) -> bool:
     """更新单条流水字段，仅更新传入的字段。"""
     fields: dict[str, object] = {}
@@ -173,6 +180,8 @@ def update_transaction(
         fields["payment_channel"] = payment_channel
     if reimbursement_status is not None:
         fields["reimbursement_status"] = reimbursement_status
+    if life_tag is not None:
+        fields["life_tag"] = life_tag
 
     if not fields:
         return False
@@ -256,6 +265,26 @@ def get_monthly_stats() -> list[dict]:
             GROUP BY month
             ORDER BY month ASC"""
             , (PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_yearly_category_stats(year: str) -> list[dict]:
+    """某年各月份支出分类汇总（个人统计口径）。"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT
+                CAST(strftime('%m', trade_time) AS INTEGER) AS month,
+                category,
+                SUM(ABS(amount)) AS total
+            FROM transactions
+            WHERE strftime('%Y', trade_time) = ?
+              AND amount < 0
+              AND category != ''
+              AND category NOT IN (?, ?)
+            GROUP BY month, category
+            ORDER BY month ASC, category ASC""",
+            (year, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
         ).fetchall()
     return [dict(row) for row in rows]
 
