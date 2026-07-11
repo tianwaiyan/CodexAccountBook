@@ -377,6 +377,8 @@ def import_manual_entry(
         "description": description,
         "counterparty": counterparty,
         "payment_channel": payment_channel,
+        # 手动新增的公费垫付应立即进入应收报销账户；其他流水保持空状态。
+        "reimbursement_status": "待报销" if category == "公费垫付" else "",
         "import_hash": "",
     }
     row["import_hash"] = generate_import_hash(row)

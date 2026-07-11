@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from io import BytesIO
+import json
 import math
 
 import pandas as pd
@@ -14,6 +15,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import time
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+from st_aggrid.shared import DataReturnMode
 
 import db
 import parser as p
@@ -60,9 +63,19 @@ STYLE = """
 st.markdown(STYLE, unsafe_allow_html=True)
 
 # ── 常量 ─────────────────────────────────────────────────────────────
-CATEGORIES = sorted(set(p.CATEGORY_MAP.values()))
 PLATFORMS = ["支付宝", "微信", "手动录入"]
 TRADE_TYPES = ["支出", "收入"]
+EXPENSE_CATEGORIES = [
+    "生活费用", "伙食费用", "交通出行", "休闲娱乐", "办公学习", "外出旅游",
+    "医疗保健", "服饰鞋帽", "非日用品", "其它支出", "公费垫付",
+]
+INCOME_CATEGORIES = [
+    "工资收入", "生活费收入", "转账收入", "银行利息",
+    "兼职收入", "其它收入", "垫付报销",
+]
+PUBLIC_EXPENSE_CATEGORY = "公费垫付"
+REIMBURSEMENT_CATEGORY = "垫付报销"
+REIMBURSEMENT_STATUSES = ["", "待报销", "已结清"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -77,7 +90,7 @@ def _format_money(value: float) -> str:
 
 
 # ── 流水列表编辑辅助 ──────────────────────────────────────────────────
-TX_EDITOR_COLUMNS = ["时间", "来源", "收支", "金额", "分类", "说明", "对方", "支付方式"]
+TX_EDITOR_COLUMNS = ["时间", "来源", "收支", "金额", "分类", "报销状态", "说明", "对方", "支付方式"]
 
 
 def _reset_tx_editor() -> None:
@@ -87,6 +100,46 @@ def _reset_tx_editor() -> None:
     st.session_state["tx_editor_current"] = None
     st.session_state["tx_dirty"] = False
     st.session_state["tx_editor_seed"] = None
+    st.session_state["merged_df"] = None
+    st.session_state["tx_selected_ids"] = []
+
+
+def _categories_for_trade_type(trade_type: str, current_category: str = "") -> list[str]:
+    """返回指定收支类型的分类，兼容保留历史导入分类。"""
+    categories = EXPENSE_CATEGORIES if trade_type == "支出" else INCOME_CATEGORIES
+    if current_category and current_category not in categories:
+        categories = [*categories, current_category]
+    return categories
+
+
+def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFrame | None) -> pd.DataFrame:
+    """同步收支、分类与报销状态间的业务规则。"""
+    normalised = editor_df.copy(deep=True)
+    baseline_by_id = {}
+    if baseline is not None:
+        baseline_by_id = {
+            _text_value(row["记录ID"]): row for _, row in baseline.iterrows()
+        }
+
+    for index, row in normalised.iterrows():
+        transaction_id = _text_value(row["记录ID"])
+        trade_type = _text_value(row["收支"])
+        category = _text_value(row["分类"])
+        status = _text_value(row.get("报销状态", ""))
+        original = baseline_by_id.get(transaction_id)
+        original_trade_type = _text_value(original["收支"]) if original is not None else trade_type
+        if trade_type != original_trade_type and category not in _categories_for_trade_type(trade_type):
+            category = ""
+
+        if category == PUBLIC_EXPENSE_CATEGORY:
+            if status not in ("待报销", "已结清"):
+                status = "待报销"
+        else:
+            status = ""
+
+        normalised.at[index, "分类"] = category
+        normalised.at[index, "报销状态"] = status
+    return normalised
 
 
 def _empty_tx_column_filters() -> dict:
@@ -167,12 +220,13 @@ def _rows_to_editor_df(rows: list[dict]) -> pd.DataFrame:
     for row in rows:
         editor_rows.append({
             "记录ID": row["id"],
-            "选择": False,
+            "选择": "",
             "时间": pd.to_datetime(row["trade_time"], errors="coerce"),
             "来源": row["platform"] or "",
             "收支": row["trade_type"] or "",
             "金额": abs(float(row["amount"])),
             "分类": row["category"] or "",
+            "报销状态": row.get("reimbursement_status", "") or "",
             "说明": row["description"] or "",
             "对方": row["counterparty"] or "",
             "支付方式": row["payment_channel"] or "",
@@ -205,13 +259,25 @@ def _editor_row_to_db(row: pd.Series) -> dict:
     if not math.isfinite(amount) or amount <= 0:
         raise ValueError("金额必须大于 0")
 
+    category = _text_value(row["分类"])
+    reimbursement_status = _text_value(row.get("报销状态", ""))
+    if category == PUBLIC_EXPENSE_CATEGORY and trade_type != "支出":
+        raise ValueError("公费垫付只能归入支出")
+    if category == REIMBURSEMENT_CATEGORY and trade_type != "收入":
+        raise ValueError("垫付报销只能归入收入")
+    if category != PUBLIC_EXPENSE_CATEGORY:
+        reimbursement_status = ""
+    elif reimbursement_status not in ("待报销", "已结清"):
+        reimbursement_status = "待报销"
+
     return {
         "id": _text_value(row["记录ID"]),
         "trade_time": parsed_time.strftime("%Y-%m-%d %H:%M:%S"),
         "platform": platform,
         "trade_type": trade_type,
         "amount": amount if trade_type == "收入" else -amount,
-        "category": _text_value(row["分类"]),
+        "category": category,
+        "reimbursement_status": reimbursement_status,
         "description": _text_value(row["说明"]),
         "counterparty": _text_value(row["对方"]),
         "payment_channel": _text_value(row["支付方式"]),
@@ -224,11 +290,23 @@ def _row_signature(row: pd.Series) -> tuple:
         values = _editor_row_to_db(row)
         return tuple(values[column] for column in (
             "trade_time", "platform", "trade_type", "amount", "category",
-            "description", "counterparty", "payment_channel",
+            "reimbursement_status", "description", "counterparty", "payment_channel",
         ))
     except ValueError:
         # 无效输入也应视作未保存修改，以便用户能收到切换提示并修正它。
-        return tuple(_text_value(row.get(column, "")) for column in TX_EDITOR_COLUMNS)
+        parsed_time = pd.to_datetime(row.get("时间"), errors="coerce")
+        time_value = "" if pd.isna(parsed_time) else parsed_time.strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            time_value,
+            _text_value(row.get("来源", "")),
+            _text_value(row.get("收支", "")),
+            _text_value(row.get("金额", "")),
+            _text_value(row.get("分类", "")),
+            _text_value(row.get("报销状态", "")),
+            _text_value(row.get("说明", "")),
+            _text_value(row.get("对方", "")),
+            _text_value(row.get("支付方式", "")),
+        )
 
 
 def _get_changed_editor_rows(editor_df: pd.DataFrame) -> list[pd.Series]:
@@ -276,6 +354,7 @@ def _save_editor_changes() -> tuple[bool, str]:
                 trade_type=values["trade_type"],
                 amount=values["amount"],
                 category=values["category"],
+                reimbursement_status=values["reimbursement_status"],
                 description=values["description"],
                 counterparty=values["counterparty"],
                 payment_channel=values["payment_channel"],
@@ -286,6 +365,69 @@ def _save_editor_changes() -> tuple[bool, str]:
 
     _reset_tx_editor()
     return True, f"已保存 {updated} 条修改。"
+
+
+def _render_transaction_grid(editor_df: pd.DataFrame):
+    """渲染支持状态着色的 AG Grid，并返回用户编辑后的数据。"""
+    builder = GridOptionsBuilder.from_dataframe(editor_df)
+    builder.configure_default_column(editable=True, resizable=True, sortable=False, filter=False)
+    builder.configure_column("记录ID", hide=True, editable=False)
+    builder.configure_column(
+        "选择", header_name="选择", width=58, editable=False,
+        checkboxSelection=True, headerCheckboxSelection=True, pinned="left",
+    )
+    builder.configure_column("时间", header_name="时间", width=170)
+    builder.configure_column("来源", cellEditor="agSelectCellEditor",
+                             cellEditorParams={"values": PLATFORMS}, width=90)
+    builder.configure_column("收支", cellEditor="agSelectCellEditor",
+                             cellEditorParams={"values": TRADE_TYPES}, width=85)
+    builder.configure_column("金额", type=["numericColumn"], width=95)
+
+    category_editor_params = JsCode(
+        """function(params) {
+            const expense = %s;
+            const income = %s;
+            const values = (params.data['收支'] === '收入' ? income : expense).slice();
+            if (params.value && !values.includes(params.value)) values.push(params.value);
+            return { values: values };
+        }""" % (json.dumps(EXPENSE_CATEGORIES, ensure_ascii=False), json.dumps(INCOME_CATEGORIES, ensure_ascii=False))
+    )
+    builder.configure_column("分类", cellEditor="agSelectCellEditor",
+                             cellEditorParams=category_editor_params, width=115)
+    builder.configure_column("报销状态", cellEditor="agSelectCellEditor",
+                             cellEditorParams={"values": REIMBURSEMENT_STATUSES}, width=105)
+    builder.configure_column("说明", width=170)
+    builder.configure_column("对方", width=120)
+    builder.configure_column("支付方式", width=120)
+
+    selected_ids = set(st.session_state.get("tx_selected_ids", []))
+    pre_selected_rows = [
+        position for position, transaction_id in enumerate(editor_df["记录ID"].tolist())
+        if _text_value(transaction_id) in selected_ids
+    ]
+    builder.configure_selection("multiple", use_checkbox=False,
+                                pre_selected_rows=pre_selected_rows,
+                                suppressRowClickSelection=True)
+    grid_options = builder.build()
+    grid_options["getRowStyle"] = JsCode(
+        """function(params) {
+            if (params.data['分类'] !== '公费垫付') return null;
+            if (params.data['报销状态'] === '待报销') return { backgroundColor: '#fff1f2' };
+            if (params.data['报销状态'] === '已结清') return { backgroundColor: '#ecfdf5' };
+            return null;
+        }"""
+    )
+
+    return AgGrid(
+        editor_df,
+        gridOptions=grid_options,
+        height=430,
+        data_return_mode=DataReturnMode.AS_INPUT,
+        update_on=["cellValueChanged", "selectionChanged"],
+        allow_unsafe_jscode=True,
+        theme="streamlit",
+        key=f"tx_grid_{st.session_state.get('tx_editor_version', 0)}",
+    )
 
 
 def _apply_tx_pending_action(action: dict) -> None:
@@ -476,6 +618,9 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
     """渲染单条流水的预填修改表单。"""
     parsed_time = pd.to_datetime(row["时间"], errors="coerce")
     default_time = parsed_time.to_pydatetime() if not pd.isna(parsed_time) else datetime.now()
+    original_trade_type = _text_value(row["收支"])
+    original_category = _text_value(row["分类"])
+    category_options = _categories_for_trade_type(original_trade_type, original_category)
 
     with st.form("single_transaction_edit_form"):
         col1, col2 = st.columns(2)
@@ -489,7 +634,12 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
         with col2:
             platform = st.selectbox("来源", PLATFORMS,
                                     index=PLATFORMS.index(_text_value(row["来源"])))
-            category = st.text_input("分类", value=_text_value(row["分类"]))
+            category = st.selectbox("分类", category_options,
+                                    index=category_options.index(original_category))
+            reimbursement_status = st.selectbox(
+                "报销状态", REIMBURSEMENT_STATUSES,
+                index=REIMBURSEMENT_STATUSES.index(_text_value(row.get("报销状态", ""))),
+            )
         description = st.text_input("说明", value=_text_value(row["说明"]))
         counterparty = st.text_input("交易对方", value=_text_value(row["对方"]))
         payment_channel = st.text_input("支付方式", value=_text_value(row["支付方式"]))
@@ -504,6 +654,12 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
         st.session_state["tx_single_edit_id"] = None
         st.rerun()
     if submitted:
+        if trade_type != original_trade_type and category not in _categories_for_trade_type(trade_type):
+            category = ""
+        if category == PUBLIC_EXPENSE_CATEGORY and trade_type == "支出":
+            reimbursement_status = reimbursement_status or "待报销"
+        else:
+            reimbursement_status = ""
         values = {
             "id": _text_value(row["记录ID"]),
             "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -511,6 +667,7 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             "trade_type": trade_type,
             "amount": amount if trade_type == "收入" else -amount,
             "category": category.strip(),
+            "reimbursement_status": reimbursement_status,
             "description": description.strip(),
             "counterparty": counterparty.strip(),
             "payment_channel": payment_channel.strip(),
@@ -520,7 +677,8 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 values["id"],
                 trade_time=values["trade_time"], platform=values["platform"],
                 trade_type=values["trade_type"], amount=values["amount"],
-                category=values["category"], description=values["description"],
+                category=values["category"], reimbursement_status=values["reimbursement_status"],
+                description=values["description"],
                 counterparty=values["counterparty"], payment_channel=values["payment_channel"],
             )
         except Exception as exc:
@@ -539,6 +697,7 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 frame.at[idx, "收支"] = values["trade_type"]
                 frame.at[idx, "金额"] = abs(values["amount"])
                 frame.at[idx, "分类"] = values["category"]
+                frame.at[idx, "报销状态"] = values["reimbursement_status"]
                 frame.at[idx, "说明"] = values["description"]
                 frame.at[idx, "对方"] = values["counterparty"]
                 frame.at[idx, "支付方式"] = values["payment_channel"]
@@ -577,6 +736,33 @@ def _render_stat_cards(month: str) -> None:
             f'<div class="stat-card"><div class="label">交易笔数</div><div class="value balance">{summary["count"]:,}</div></div>',
             unsafe_allow_html=True,
         )
+
+
+def _render_reimbursement_kpis(month: str) -> None:
+    """展示个人预算与虚拟应收报销账户的核心指标。"""
+    personal_summary = db.get_month_summary(month)
+    reimbursement = db.get_reimbursement_summary()
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("个人支出影响（本月）", f"¥{personal_summary['expense']:,.2f}")
+    with c2:
+        st.metric("待报销总额", f"¥{reimbursement['pending']:,.2f}")
+    with c3:
+        st.metric("已收回报销", f"¥{reimbursement['settled']:,.2f}")
+
+
+def _render_reimbursement_list() -> None:
+    """渲染全部公费垫付的报销跟踪清单。"""
+    records = db.get_reimbursement_records()
+    if not records:
+        st.info("暂无公费垫付记录。")
+        return
+    frame = pd.DataFrame(records).rename(columns={
+        "trade_time": "时间", "counterparty": "对方", "description": "说明",
+        "amount": "金额", "reimbursement_status": "报销状态",
+    })
+    st.subheader("报销清单")
+    st.dataframe(frame, use_container_width=True, hide_index=True)
 
 
 def _render_monthly_trend() -> None:
@@ -687,6 +873,9 @@ def page_dashboard() -> None:
                 )
 
     st.divider()
+    _render_reimbursement_kpis(selected_month)
+
+    st.divider()
     _render_stat_cards(selected_month)
 
     st.divider()
@@ -697,6 +886,9 @@ def page_dashboard() -> None:
         _render_category_pie(selected_month)
     with col2:
         _render_platform_pie(selected_month)
+
+    st.divider()
+    _render_reimbursement_list()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -764,33 +956,34 @@ def page_transactions() -> None:
                 st.session_state["tx_baseline"] = database_df.copy(deep=True)
             editor_source = st.session_state.pop("tx_editor_seed", None)
             if editor_source is None:
+                editor_source = st.session_state.get("merged_df")
+            if (editor_source is None
+                    or set(editor_source["记录ID"].map(_text_value))
+                    != set(database_df["记录ID"].map(_text_value))):
                 editor_source = st.session_state["tx_baseline"].copy(deep=True)
 
-            editor_df = st.data_editor(
-                editor_source,
-                use_container_width=True,
-                hide_index=True,
-                height=430,
-                key=f"tx_editor_{st.session_state.get('tx_editor_version', 0)}",
-                disabled=["记录ID"],
-                column_config={
-                    "记录ID": None,
-                    "选择": st.column_config.CheckboxColumn("选择", default=False),
-                    "时间": st.column_config.DatetimeColumn("时间", format="YYYY-MM-DD HH:mm:ss"),
-                    "来源": st.column_config.SelectboxColumn("来源", options=PLATFORMS, required=True),
-                    "收支": st.column_config.SelectboxColumn("收支", options=TRADE_TYPES, required=True),
-                    "金额": st.column_config.NumberColumn("金额", min_value=0.01, step=0.01,
-                                                             format="¥%.2f", required=True),
-                    "分类": st.column_config.TextColumn("分类"),
-                    "说明": st.column_config.TextColumn("说明"),
-                    "对方": st.column_config.TextColumn("对方"),
-                    "支付方式": st.column_config.TextColumn("支付方式"),
-                },
+            grid_response = _render_transaction_grid(editor_source)
+            editor_df = grid_response.data.copy(deep=True)
+            editor_df = _normalise_reimbursement_fields(
+                editor_df, st.session_state.get("tx_baseline")
             )
+            if not editor_df.equals(grid_response.data):
+                st.session_state["merged_df"] = editor_df.copy(deep=True)
+                st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+                st.rerun()
+
+            selected_rows = grid_response.selected_rows
+            if selected_rows is not None:
+                st.session_state["tx_selected_ids"] = [
+                    _text_value(transaction_id) for transaction_id in selected_rows["记录ID"].tolist()
+                ]
+            st.session_state["merged_df"] = editor_df.copy(deep=True)
             st.session_state["tx_editor_current"] = editor_df.copy(deep=True)
             changed_rows = _get_changed_editor_rows(editor_df)
             st.session_state["tx_dirty"] = bool(changed_rows)
-            selected_df = editor_df[editor_df["选择"].fillna(False).astype(bool)]
+            selected_df = editor_df[
+                editor_df["记录ID"].map(_text_value).isin(st.session_state.get("tx_selected_ids", []))
+            ]
             selected_count = len(selected_df)
 
     with controls_slot.container(height=320, border=False):
@@ -869,9 +1062,10 @@ def page_transactions() -> None:
             st.success(st.session_state.pop("tx_notice"))
 
     if select_all and editor_df is not None:
-        selected_editor_df = editor_df.copy(deep=True)
-        selected_editor_df["选择"] = not all_selected
-        st.session_state["tx_editor_seed"] = selected_editor_df
+        st.session_state["tx_selected_ids"] = (
+            [] if all_selected else [_text_value(transaction_id) for transaction_id in editor_df["记录ID"].tolist()]
+        )
+        st.session_state["tx_editor_seed"] = editor_df.copy(deep=True)
         st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
         st.rerun()
 
@@ -1000,15 +1194,21 @@ def page_import() -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 def page_manual() -> None:
+    if "manual_trade_type" not in st.session_state:
+        st.session_state["manual_trade_type"] = "支出"
+    trade_type = st.selectbox("收支类型", TRADE_TYPES, key="manual_trade_type")
+    category_options = _categories_for_trade_type(trade_type)
+    if st.session_state.get("manual_category") not in category_options:
+        st.session_state["manual_category"] = category_options[0]
+
     with st.form("manual_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             entry_date = st.date_input("日期", value=date.today())
-            trade_type = st.selectbox("收支类型", TRADE_TYPES)
             amount = st.number_input("金额", min_value=0.01, value=0.01, step=0.01, format="%.2f")
         with col2:
             platform = st.selectbox("来源", PLATFORMS)
-            category = st.selectbox("分类", CATEGORIES, index=CATEGORIES.index("其他") if "其他" in CATEGORIES else 0)
+            category = st.selectbox("分类", category_options, key="manual_category")
         description = st.text_input("说明", placeholder="例如：午餐、地铁通勤...")
         counterparty = st.text_input("交易对方", placeholder="例如：美团、滴滴...")
         payment_channel = st.text_input("支付方式", placeholder="例如：余额宝、零钱通...")

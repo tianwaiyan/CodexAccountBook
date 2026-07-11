@@ -24,6 +24,8 @@ def _db_dir() -> Path:
     return base
 
 DB_PATH = _db_dir() / "account_book.db"
+PUBLIC_EXPENSE_CATEGORY = "公费垫付"
+REIMBURSEMENT_CATEGORY = "垫付报销"
 
 # ── 建表 ────────────────────────────────────────────────────────────
 def init_db() -> None:
@@ -43,7 +45,8 @@ def init_db() -> None:
                 description TEXT NOT NULL DEFAULT '',
                 counterparty TEXT NOT NULL DEFAULT '',
                 payment_channel TEXT NOT NULL DEFAULT '',
-                import_hash TEXT UNIQUE NOT NULL
+                import_hash TEXT UNIQUE NOT NULL,
+                reimbursement_status TEXT NOT NULL DEFAULT ''
             )"""
         )
         conn.execute(
@@ -55,6 +58,11 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_category ON transactions(category)"
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(transactions)")}
+        if "reimbursement_status" not in columns:
+            conn.execute(
+                "ALTER TABLE transactions ADD COLUMN reimbursement_status TEXT NOT NULL DEFAULT ''"
+            )
 
 
 # ── 连接管理 ────────────────────────────────────────────────────────
@@ -102,8 +110,8 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                     """INSERT OR IGNORE INTO transactions
                        (id, trade_time, platform, trade_type, amount,
                         category, description, counterparty, payment_channel,
-                        import_hash)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        import_hash, reimbursement_status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(uuid.uuid4()),
                         row["trade_time"],
@@ -115,6 +123,7 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                         row.get("counterparty", ""),
                         row.get("payment_channel", ""),
                         row["import_hash"],
+                        row.get("reimbursement_status", ""),
                     ),
                 )
                 if cursor.rowcount > 0:
@@ -142,6 +151,7 @@ def update_transaction(
     description: Optional[str] = None,
     counterparty: Optional[str] = None,
     payment_channel: Optional[str] = None,
+    reimbursement_status: Optional[str] = None,
 ) -> bool:
     """更新单条流水字段，仅更新传入的字段。"""
     fields: dict[str, object] = {}
@@ -161,6 +171,8 @@ def update_transaction(
         fields["counterparty"] = counterparty
     if payment_channel is not None:
         fields["payment_channel"] = payment_channel
+    if reimbursement_status is not None:
+        fields["reimbursement_status"] = reimbursement_status
 
     if not fields:
         return False
@@ -240,8 +252,10 @@ def get_monthly_stats() -> list[dict]:
                 SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS expense,
                 COUNT(*) AS count
             FROM transactions
+            WHERE category NOT IN (?, ?)
             GROUP BY month
             ORDER BY month ASC"""
+            , (PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY)
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -256,9 +270,10 @@ def get_monthly_category_stats(year_month: str) -> list[dict]:
                 COUNT(*) AS count
             FROM transactions
             WHERE strftime('%Y-%m', trade_time) = ? AND amount < 0 AND category != ''
+              AND category NOT IN (?, ?)
             GROUP BY category
             ORDER BY total DESC""",
-            (year_month,),
+            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -273,9 +288,10 @@ def get_platform_stats(year_month: str) -> list[dict]:
                 COUNT(*) AS count
             FROM transactions
             WHERE strftime('%Y-%m', trade_time) = ? AND amount < 0
+              AND category NOT IN (?, ?)
             GROUP BY platform
             ORDER BY total DESC""",
-            (year_month,),
+            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -289,12 +305,42 @@ def get_month_summary(year_month: str) -> dict:
                 COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS expense,
                 COUNT(*) AS count
             FROM transactions
-            WHERE strftime('%Y-%m', trade_time) = ?""",
-            (year_month,),
+            WHERE strftime('%Y-%m', trade_time) = ?
+              AND category NOT IN (?, ?)""",
+            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
         ).fetchone()
     result = dict(row)
     result["balance"] = result["income"] - result["expense"]
     return result
+
+
+def get_reimbursement_summary() -> dict:
+    """返回虚拟应收报销账户的待报销与已结清余额。"""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT
+                COALESCE(SUM(CASE WHEN reimbursement_status = '待报销' THEN ABS(amount) ELSE 0 END), 0) AS pending,
+                COALESCE(SUM(CASE WHEN reimbursement_status = '已结清' THEN ABS(amount) ELSE 0 END), 0) AS settled
+            FROM transactions
+            WHERE category = ? AND amount < 0""",
+            (PUBLIC_EXPENSE_CATEGORY,),
+        ).fetchone()
+    return dict(row)
+
+
+def get_reimbursement_records() -> list[dict]:
+    """返回全部公费垫付流水，用于仪表盘报销跟踪清单。"""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT trade_time, counterparty, description, ABS(amount) AS amount,
+                      reimbursement_status
+            FROM transactions
+            WHERE category = ? AND amount < 0
+            ORDER BY CASE reimbursement_status WHEN '待报销' THEN 0 ELSE 1 END,
+                     trade_time DESC""",
+            (PUBLIC_EXPENSE_CATEGORY,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_all_transactions_count() -> int:
