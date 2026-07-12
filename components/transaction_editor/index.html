@@ -34,6 +34,12 @@
     td.range { background: #eff6ff !important; }
     tr.pending td { background: #fff1f2; } tr.settled td { background: #ecfdf5; }
     .select { width: 54px; text-align: center; } .select input { width: 16px; height: 16px; cursor: pointer; }
+    .grid.yearly-summary .table-wrap { overflow-x: hidden; }
+    .grid.yearly-summary table { width: 100%; min-width: 100%; font-size: 12px; }
+    .grid.yearly-summary th { height: 32px; }
+    .grid.yearly-summary th .header-label { padding: 7px 4px; }
+    .grid.yearly-summary td .cell-text { padding: 7px 4px; }
+    .grid.yearly-summary td.summary-first .cell-text { font-weight: 600; }
     th.summary-first { left: 0; z-index: 4; box-shadow: 1px 0 0 #e5e7eb; }
     td.summary-first { position: sticky; left: 0; z-index: 1; background: #fff; box-shadow: 1px 0 0 #e5e7eb; }
     input, select { width: 100%; min-width: 0; height: 35px; padding: 6px 8px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
@@ -46,13 +52,13 @@
   <div id="grid" class="grid"><div class="empty">正在加载流水…</div></div>
   <script>
     const LAYOUT_KEY = "account_book_transaction_grid_layout_v1";
-    const SUMMARY_LAYOUT_KEY_PREFIX = "account_book_yearly_category_grid_layout_";
+    const SUMMARY_LAYOUT_KEY_PREFIX = "account_book_yearly_category_grid_layout_v3_";
     const DATE_MODE_KEY = "account_book_transaction_grid_date_mode_v1";
     const BASE_COLUMNS = [
-      { key: "时间", width: 170, kind: "datetime-local" }, { key: "来源", width: 90, kind: "select" },
+      { key: "时间", width: 170, kind: "datetime-local" }, { key: "账户", width: 90, kind: "select" },
       { key: "收支", width: 85, kind: "select" }, { key: "金额", width: 95, kind: "number" },
       { key: "分类", width: 120, kind: "select" }, { key: "标签", width: 110, kind: "select" }, { key: "报销状态", width: 105, kind: "select" },
-      { key: "说明", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
+      { key: "备注", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
       { key: "支付方式", width: 120, kind: "text" },
     ];
     const state = { version: null, rows: [], args: {}, mode: "view", selected: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, tagging: false, dragKey: null };
@@ -104,7 +110,7 @@
       if (row["收支"] !== "支出") row["标签"] = "";
     };
     const optionsFor = (row, key) => {
-      if (key === "来源") return state.args.platforms || [];
+      if (key === "账户") return state.args.accounts || [];
       if (key === "收支") return state.args.trade_types || [];
       if (key === "分类") {
         const categories = row["收支"] === "收入"
@@ -149,6 +155,7 @@
       const root = document.getElementById("grid");
       const previousWrap = root.querySelector(".table-wrap");
       const previousScroll = previousWrap ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft } : null;
+      root.className = state.mode === "yearly-summary" ? "grid yearly-summary" : "grid";
       document.documentElement.style.setProperty("--grid-height", `${state.args.height || 500}px`);
       if (state.mode === "actions") { renderActions(root); return; }
       if (!state.rows.length) { root.innerHTML = `<div class="empty">${state.mode === "yearly-summary" ? "当前年度没有支出记录。" : "当前没有流水。"}</div>`; setHeight(); return; }
@@ -156,15 +163,15 @@
       const selectedCount = state.selected.size;
       const toolbar = state.mode === "edit"
         ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="set-life-tag" type="button" ${selectedCount ? "" : "disabled"}>设置标签</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
-      const summaryToolbar = state.mode === "yearly-summary"
-        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button></div>` : "";
+      const summaryToolbar = "";
       const selectable = state.mode === "view" || state.mode === "edit";
       const selectHeader = selectable ? `<th class="select"><input id="select-all" type="checkbox" aria-label="全选"></th>` : "";
       const selectCells = (row, index) => selectable ? `<td class="select"><input type="checkbox" data-select-id="${esc(row["记录ID"])}" ${state.selected.has(String(row["记录ID"])) ? "checked" : ""} aria-label="选择第 ${index + 1} 行"></td>` : "";
       const headerCells = cols.map(col => {
         const firstClass = state.mode === "yearly-summary" && col.key === summaryFirstKey() ? " summary-first" : "";
         const draggable = state.mode !== "yearly-summary" || col.key !== summaryFirstKey();
-        return `<th class="${firstClass}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${col.key}</span><span class="resize" data-resize="${col.key}"></span></th>`;
+        const resizeHandle = state.mode === "yearly-summary" ? "" : `<span class="resize" data-resize="${col.key}"></span>`;
+        return `<th class="${firstClass}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${col.key}</span>${resizeHandle}</th>`;
       }).join("");
       root.innerHTML = `${toolbar}${summaryToolbar}${lifeTagMarkup()}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
       bindEvents(root);
@@ -186,11 +193,23 @@
     const renderActions = root => {
       state.selected = readSelection();
       root.className = "";
-      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="begin-edit" class="primary" type="button">✏️ 修改流水</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
+      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="edit-selected" class="primary" type="button" ${state.selected.size === 1 ? "" : "disabled"}>修改选中行</button><button id="begin-edit" type="button">修改流水</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
       document.getElementById("reset-layout")?.addEventListener("click", requestReset);
       document.getElementById("toggle-date")?.addEventListener("click", () => { state.dateMode = state.dateMode === "datetime" ? "date" : "datetime"; saveDateMode(); renderActions(root); });
+      document.getElementById("edit-selected")?.addEventListener("click", () => {
+        const selectedIds = [...readSelection()];
+        if (selectedIds.length === 1) setValue({ action: "single_edit", selected_ids: selectedIds });
+        else renderActions(root);
+      });
       document.getElementById("begin-edit")?.addEventListener("click", () => setValue({ action: "edit" }));
-      document.getElementById("delete-selected")?.addEventListener("click", () => setValue({ action: "delete", selected_ids: [...state.selected] }));
+      document.getElementById("delete-selected")?.addEventListener("click", event => {
+        // 操作栏与表格是独立组件实例；点击时重新读取 localStorage，避免使用同步滞后的内存选择状态。
+        const selectedIds = [...readSelection()];
+        if (!selectedIds.length) { renderActions(root); return; }
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = "正在删除…";
+        setValue({ action: "delete", selected_ids: selectedIds });
+      });
       bindResetConfirmation(root);
       setHeight();
     };

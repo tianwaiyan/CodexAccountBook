@@ -14,11 +14,11 @@ import db
 # ── 字段映射 ─────────────────────────────────────────────────────────
 STANDARD_COLUMNS = [
     "trade_time",
-    "platform",
+    "account",
     "trade_type",
     "amount",
     "category",
-    "description",
+    "remark",
     "counterparty",
     "payment_channel",
 ]
@@ -31,7 +31,7 @@ ALIPAY_COLUMN_MAP = {
     "交易时间": "trade_time",
     "交易分类": "category_raw",
     "交易对方": "counterparty",
-    "商品说明": "description",
+    "商品说明": "remark",
     "收/支": "trade_type",
     "金额": "amount_raw",
     "收/付款方式": "payment_channel",
@@ -41,7 +41,7 @@ WECHAT_COLUMN_MAP = {
     "交易时间": "trade_time",
     "交易类型": "category_raw",
     "交易对方": "counterparty",
-    "商品": "description",
+    "商品": "remark",
     "收/支": "trade_type",
     "金额(元)": "amount_raw",
     "支付方式": "payment_channel",
@@ -75,7 +75,7 @@ def normalize_category(raw_category: str) -> str:
 
 
 def generate_import_hash(row: dict) -> str:
-    content = f"{row.get('trade_time','')}|{row.get('amount',0)}|{row.get('counterparty','')}|{row.get('description','')}"
+    content = f"{row.get('trade_time','')}|{row.get('amount',0)}|{row.get('counterparty','')}|{row.get('remark','')}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
@@ -194,7 +194,7 @@ def parse_alipay(file: BinaryIO) -> pd.DataFrame:
         df = _read_csv_with_header(file, "gb18030", skiprows=header_row, source_name="支付宝")
 
     df = _normalize_columns(df, ALIPAY_COLUMN_MAP, "支付宝")
-    df["platform"] = "支付宝"
+    df["account"] = "支付宝"
     return df
 
 
@@ -208,7 +208,7 @@ def parse_wechat(file: BinaryIO) -> pd.DataFrame:
         df = _read_csv_with_header(file, "utf-8", skiprows=header_row, source_name="微信")
 
     df = _normalize_columns(df, WECHAT_COLUMN_MAP, "微信")
-    df["platform"] = "微信"
+    df["account"] = "微信"
     return df
 
 
@@ -251,17 +251,17 @@ def _normalize_trade_type(raw_type: str) -> str:
 
 # Alipay auto-exclude: 余额宝 earnings, 花呗 auto-repay, bank scheduled transfer
 ALIPAY_EXCLUDE_RULES = [
-    lambda r: ("余额宝" in str(r.get("description", "")) and "收益" in str(r.get("description", ""))),
+    lambda r: ("余额宝" in str(r.get("remark", "")) and "收益" in str(r.get("remark", ""))),
     lambda r: ("余额宝" in str(r.get("category", "")) and "收益" in str(r.get("category", ""))),
-    lambda r: ("花呗" in str(r.get("counterparty", "")) and "还款" in str(r.get("description", ""))),
-    lambda r: ("花呗" in str(r.get("description", "")) and "还款" in str(r.get("description", ""))),
-    lambda r: ("定时转入" in str(r.get("description", ""))),
+    lambda r: ("花呗" in str(r.get("counterparty", "")) and "还款" in str(r.get("remark", ""))),
+    lambda r: ("花呗" in str(r.get("remark", "")) and "还款" in str(r.get("remark", ""))),
+    lambda r: ("定时转入" in str(r.get("remark", ""))),
 ]
 
 
 WECHAT_EXCLUDE_RULES = [
     lambda row: (
-        "转入零钱通" in str(row.get("description", ""))
+        "转入零钱通" in str(row.get("remark", ""))
         or "转入零钱通" in str(row.get("category", ""))
     ),
 ]
@@ -313,11 +313,11 @@ def _df_to_rows(df: pd.DataFrame) -> list[dict]:
 
         row = {
             "trade_time": trade_time,
-            "platform": str(series.get("platform", "")),
+            "account": str(series.get("account", "")),
             "trade_type": trade_type,
             "amount": amount,
             "category": category,
-            "description": str(series.get("description", "")),
+            "remark": str(series.get("remark", "")),
             "counterparty": str(series.get("counterparty", "")),
             "payment_channel": str(series.get("payment_channel", "")),
             "import_hash": "",
@@ -328,7 +328,7 @@ def _df_to_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict], list[dict]]:
+def import_csv_to_db(file: BinaryIO, account: str) -> tuple[int, int, list[dict], list[dict]]:
     # Read uploaded file bytes into BytesIO for robust handling with Streamlit
     import io
     file_bytes = file.read()
@@ -336,31 +336,31 @@ def import_csv_to_db(file: BinaryIO, platform: str) -> tuple[int, int, list[dict
     if hasattr(file, "name"):
         buf.name = file.name
 
-    if platform == "支付宝":
+    if account == "支付宝":
         df = parse_alipay(buf)
-    elif platform == "微信":
+    elif account == "微信":
         df = parse_wechat(buf)
     else:
-        raise ValueError(f"Unsupported platform: {platform}")
+        raise ValueError(f"Unsupported account: {account}")
 
     df = _clean_amount_column(df)
     rows = _df_to_rows(df)
     excluded_rows = []
-    if platform == "支付宝":
+    if account == "支付宝":
         rows, excluded_rows = _exclude_alipay_rows(rows)
-    elif platform == "微信":
+    elif account == "微信":
         rows, excluded_rows = _exclude_wechat_rows(rows)
     inserted, skipped = db.insert_transactions(rows)
     preview = rows[:5]
     return inserted, skipped, excluded_rows, preview
 def import_manual_entry(
     trade_time: str,
-    platform: str,
+    account: str,
     trade_type: str,
     amount: float,
     category: str,
     life_tag: str = "",
-    description: str = "",
+    remark: str = "",
     counterparty: str = "",
     payment_channel: str = "",
 ) -> bool:
@@ -371,12 +371,12 @@ def import_manual_entry(
 
     row = {
         "trade_time": trade_time,
-        "platform": platform,
+        "account": account,
         "trade_type": trade_type,
         "amount": amount,
         "category": category,
         "life_tag": life_tag if trade_type == "支出" else "",
-        "description": description,
+        "remark": remark,
         "counterparty": counterparty,
         "payment_channel": payment_channel,
         # 手动新增的公费垫付应立即进入应收报销账户；其他流水保持空状态。
@@ -386,3 +386,71 @@ def import_manual_entry(
     row["import_hash"] = generate_import_hash(row)
     inserted, _ = db.insert_transactions([row])
     return inserted > 0
+
+
+def import_historical_excel_to_db(file_path: str | Path) -> dict[str, dict[str, int]]:
+    """导入旧版记账 Excel 中可识别的支出与收入流水表。"""
+    sheet_trade_types = {
+        "支出表": "支出",
+        "Sheet1": "支出",
+        "收入表": "收入",
+        "Sheet2": "支出",
+        "Sheet3": "收入",
+    }
+    path = Path(file_path)
+    excel = pd.ExcelFile(path)
+    available_sheets = [
+        (sheet_name, trade_type)
+        for sheet_name, trade_type in sheet_trade_types.items()
+        if sheet_name in excel.sheet_names
+    ]
+    if not available_sheets:
+        raise ValueError("Excel 中未找到可识别的支出或收入流水表")
+
+    results: dict[str, dict[str, int]] = {}
+    for sheet_name, trade_type in available_sheets:
+        frame = pd.read_excel(path, sheet_name=sheet_name)
+        category_column = "分类" if "分类" in frame.columns else "收入类型"
+        remark_column = "备注" if "备注" in frame.columns else "备注 发红包的人"
+        required_columns = {"时间", "账户", category_column, "金额", remark_column}
+        missing_columns = required_columns - set(frame.columns)
+        if missing_columns:
+            raise ValueError(f"{sheet_name} 缺少列：{'、'.join(sorted(missing_columns))}")
+
+        rows: list[dict] = []
+        for row_number, source in frame.iterrows():
+            trade_time = pd.to_datetime(source["时间"], errors="coerce")
+            amount = pd.to_numeric(source["金额"], errors="coerce")
+            if pd.isna(trade_time) or pd.isna(amount):
+                raise ValueError(f"{sheet_name} 第 {row_number + 2} 行的时间或金额无效")
+
+            account = "" if pd.isna(source["账户"]) else str(source["账户"]).strip()
+            category = "" if pd.isna(source[category_column]) else str(source[category_column]).strip()
+            remark = "" if pd.isna(source[remark_column]) else str(source[remark_column]).strip()
+            life_tag = ""
+            if trade_type == "支出" and "标签" in frame.columns and not pd.isna(source["标签"]):
+                life_tag = str(source["标签"]).strip()
+            record = {
+                "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "account": account,
+                "trade_type": trade_type,
+                "amount": abs(float(amount)) if trade_type == "收入" else -abs(float(amount)),
+                "category": category,
+                "remark": remark,
+                "counterparty": "",
+                "payment_channel": "",
+                "life_tag": life_tag,
+                "reimbursement_status": "",
+                "import_hash": "",
+            }
+            record["import_hash"] = generate_import_hash(record)
+            rows.append(record)
+
+        inserted, skipped = db.insert_transactions(rows)
+        results[sheet_name] = {
+            "candidates": len(rows),
+            "inserted": inserted,
+            "skipped": skipped,
+        }
+
+    return results

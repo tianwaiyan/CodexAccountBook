@@ -26,6 +26,14 @@ def _db_dir() -> Path:
 DB_PATH = _db_dir() / "account_book.db"
 PUBLIC_EXPENSE_CATEGORY = "公费垫付"
 REIMBURSEMENT_CATEGORY = "垫付报销"
+PASS_THROUGH_EXPENSE_CATEGORY = "过手转出"
+PASS_THROUGH_INCOME_CATEGORY = "过手转入"
+PERSONAL_STATS_EXCLUDED_CATEGORIES = (
+    PUBLIC_EXPENSE_CATEGORY,
+    REIMBURSEMENT_CATEGORY,
+    PASS_THROUGH_EXPENSE_CATEGORY,
+    PASS_THROUGH_INCOME_CATEGORY,
+)
 
 # ── 建表 ────────────────────────────────────────────────────────────
 def init_db() -> None:
@@ -38,11 +46,11 @@ def init_db() -> None:
             """CREATE TABLE IF NOT EXISTS transactions (
                 id          TEXT PRIMARY KEY,
                 trade_time  DATETIME NOT NULL,
-                platform    TEXT NOT NULL,
+                account     TEXT NOT NULL,
                 trade_type  TEXT NOT NULL,
                 amount      REAL NOT NULL,
                 category    TEXT NOT NULL DEFAULT '',
-                description TEXT NOT NULL DEFAULT '',
+                remark      TEXT NOT NULL DEFAULT '',
                 counterparty TEXT NOT NULL DEFAULT '',
                 payment_channel TEXT NOT NULL DEFAULT '',
                 import_hash TEXT UNIQUE NOT NULL,
@@ -50,15 +58,11 @@ def init_db() -> None:
                 life_tag TEXT NOT NULL DEFAULT ''
             )"""
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_trade_time ON transactions(trade_time DESC)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_platform ON transactions(platform)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_category ON transactions(category)"
-        )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(transactions)")}
+        if "platform" in columns and "account" not in columns:
+            conn.execute("ALTER TABLE transactions RENAME COLUMN platform TO account")
+        if "description" in columns and "remark" not in columns:
+            conn.execute("ALTER TABLE transactions RENAME COLUMN description TO remark")
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(transactions)")}
         if "reimbursement_status" not in columns:
             conn.execute(
@@ -68,6 +72,16 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE transactions ADD COLUMN life_tag TEXT NOT NULL DEFAULT ''"
             )
+        conn.execute("DROP INDEX IF EXISTS idx_platform")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trade_time ON transactions(trade_time DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_account ON transactions(account)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_category ON transactions(category)"
+        )
 
 
 # ── 连接管理 ────────────────────────────────────────────────────────
@@ -113,18 +127,18 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
             try:
                 cursor = conn.execute(
                     """INSERT OR IGNORE INTO transactions
-                       (id, trade_time, platform, trade_type, amount,
-                        category, description, counterparty, payment_channel,
+                       (id, trade_time, account, trade_type, amount,
+                        category, remark, counterparty, payment_channel,
                         import_hash, reimbursement_status, life_tag)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         str(uuid.uuid4()),
                         row["trade_time"],
-                        row["platform"],
+                        row["account"],
                         row["trade_type"],
                         row["amount"],
                         row.get("category", ""),
-                        row.get("description", ""),
+                        row.get("remark", ""),
                         row.get("counterparty", ""),
                         row.get("payment_channel", ""),
                         row["import_hash"],
@@ -147,14 +161,33 @@ def delete_transaction(transaction_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+def delete_transactions(transaction_ids: list[str]) -> int:
+    """在一次事务内批量删除流水，返回实际删除数量。"""
+    ids = list(dict.fromkeys(transaction_id for transaction_id in transaction_ids if transaction_id))
+    if not ids:
+        return 0
+
+    deleted = 0
+    # SQLite 默认最多接受 999 个绑定参数；分块删除仍会共用同一个事务。
+    with get_connection() as conn:
+        for start in range(0, len(ids), 900):
+            batch = ids[start:start + 900]
+            placeholders = ", ".join("?" for _ in batch)
+            cursor = conn.execute(
+                f"DELETE FROM transactions WHERE id IN ({placeholders})", batch
+            )
+            deleted += max(cursor.rowcount, 0)
+    return deleted
+
+
 def update_transaction(
     transaction_id: str,
     trade_time: Optional[str] = None,
-    platform: Optional[str] = None,
+    account: Optional[str] = None,
     trade_type: Optional[str] = None,
     amount: Optional[float] = None,
     category: Optional[str] = None,
-    description: Optional[str] = None,
+    remark: Optional[str] = None,
     counterparty: Optional[str] = None,
     payment_channel: Optional[str] = None,
     reimbursement_status: Optional[str] = None,
@@ -164,16 +197,16 @@ def update_transaction(
     fields: dict[str, object] = {}
     if trade_time is not None:
         fields["trade_time"] = trade_time
-    if platform is not None:
-        fields["platform"] = platform
+    if account is not None:
+        fields["account"] = account
     if trade_type is not None:
         fields["trade_type"] = trade_type
     if amount is not None:
         fields["amount"] = amount
     if category is not None:
         fields["category"] = category
-    if description is not None:
-        fields["description"] = description
+    if remark is not None:
+        fields["remark"] = remark
     if counterparty is not None:
         fields["counterparty"] = counterparty
     if payment_channel is not None:
@@ -198,29 +231,35 @@ def update_transaction(
 
 # ── 查询操作 ────────────────────────────────────────────────────────
 def query_transactions(
-    year_month: str,
+    year_month: Optional[str],
     page: int = 1,
     page_size: Optional[int] = 50,
     keyword: str = "",
 ) -> tuple[list[dict], int]:
-    """查询某月流水，支持关键字搜索和可选分页。
+    """查询流水，支持按月份、关键字和可选分页。
 
     Args:
-        year_month: "2026-07" 格式。
+        year_month: "2026-07" 格式；传入 None 时查询全部月份。
         page: 页码，从 1 开始；仅 page_size 非空时生效。
         page_size: 每页条数；传入 None 时返回全部匹配记录。
-        keyword: 搜索关键字，模糊匹配 商品说明、分类、交易对方。
+        keyword: 搜索关键字，模糊匹配备注、分类、交易对方。
 
     Returns:
         (rows, total_count)
     """
-    where = "WHERE strftime('%Y-%m', trade_time) = ?"
-    params: list[object] = [year_month]
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if year_month:
+        conditions.append("strftime('%Y-%m', trade_time) = ?")
+        params.append(year_month)
 
     if keyword:
-        where += " AND (description LIKE ? OR category LIKE ? OR counterparty LIKE ?)"
+        conditions.append("(remark LIKE ? OR category LIKE ? OR counterparty LIKE ?)")
         like = f"%{keyword}%"
         params.extend([like, like, like])
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     with get_connection() as conn:
         total = conn.execute(
@@ -261,10 +300,10 @@ def get_monthly_stats() -> list[dict]:
                 SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS expense,
                 COUNT(*) AS count
             FROM transactions
-            WHERE category NOT IN (?, ?)
+            WHERE category NOT IN (?, ?, ?, ?)
             GROUP BY month
             ORDER BY month ASC"""
-            , (PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY)
+            , PERSONAL_STATS_EXCLUDED_CATEGORIES
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -281,10 +320,10 @@ def get_yearly_category_stats(year: str) -> list[dict]:
             WHERE strftime('%Y', trade_time) = ?
               AND amount < 0
               AND category != ''
-              AND category NOT IN (?, ?)
+              AND category NOT IN (?, ?, ?, ?)
             GROUP BY month, category
             ORDER BY month ASC, category ASC""",
-            (year, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
+            (year, *PERSONAL_STATS_EXCLUDED_CATEGORIES),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -299,28 +338,28 @@ def get_monthly_category_stats(year_month: str) -> list[dict]:
                 COUNT(*) AS count
             FROM transactions
             WHERE strftime('%Y-%m', trade_time) = ? AND amount < 0 AND category != ''
-              AND category NOT IN (?, ?)
+              AND category NOT IN (?, ?, ?, ?)
             GROUP BY category
             ORDER BY total DESC""",
-            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
+            (year_month, *PERSONAL_STATS_EXCLUDED_CATEGORIES),
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def get_platform_stats(year_month: str) -> list[dict]:
-    """某月各平台支出来源分布。"""
+def get_account_stats(year_month: str) -> list[dict]:
+    """某月各账户支出分布。"""
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT
-                platform,
+                account,
                 SUM(ABS(amount)) AS total,
                 COUNT(*) AS count
             FROM transactions
             WHERE strftime('%Y-%m', trade_time) = ? AND amount < 0
-              AND category NOT IN (?, ?)
-            GROUP BY platform
+              AND category NOT IN (?, ?, ?, ?)
+            GROUP BY account
             ORDER BY total DESC""",
-            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
+            (year_month, *PERSONAL_STATS_EXCLUDED_CATEGORIES),
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -335,12 +374,26 @@ def get_month_summary(year_month: str) -> dict:
                 COUNT(*) AS count
             FROM transactions
             WHERE strftime('%Y-%m', trade_time) = ?
-              AND category NOT IN (?, ?)""",
-            (year_month, PUBLIC_EXPENSE_CATEGORY, REIMBURSEMENT_CATEGORY),
+              AND category NOT IN (?, ?, ?, ?)""",
+            (year_month, *PERSONAL_STATS_EXCLUDED_CATEGORIES),
         ).fetchone()
     result = dict(row)
     result["balance"] = result["income"] - result["expense"]
     return result
+
+
+def get_pass_through_summary(year_month: str) -> dict:
+    """返回某月过手转出的支出额与过手转入的收入额。"""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT
+                COALESCE(SUM(CASE WHEN category = ? AND amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS outgoing,
+                COALESCE(SUM(CASE WHEN category = ? AND amount > 0 THEN amount ELSE 0 END), 0) AS incoming
+            FROM transactions
+            WHERE strftime('%Y-%m', trade_time) = ?""",
+            (PASS_THROUGH_EXPENSE_CATEGORY, PASS_THROUGH_INCOME_CATEGORY, year_month),
+        ).fetchone()
+    return dict(row)
 
 
 def get_reimbursement_summary() -> dict:
@@ -361,7 +414,7 @@ def get_reimbursement_records() -> list[dict]:
     """返回全部公费垫付流水，用于仪表盘报销跟踪清单。"""
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT trade_time, counterparty, description, ABS(amount) AS amount,
+            """SELECT trade_time, counterparty, remark, ABS(amount) AS amount,
                       reimbursement_status
             FROM transactions
             WHERE category = ? AND amount < 0
