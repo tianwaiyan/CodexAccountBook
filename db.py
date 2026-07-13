@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+import re
 from contextlib import contextmanager
 from datetime import datetime
 import os, sys
 from pathlib import Path
 from typing import Generator, Optional
+
+from status_rules import normalise_new_status
 
 
 # ── 数据库路径 ──────────────────────────────────────────────────────
@@ -142,7 +145,10 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                         row.get("counterparty", ""),
                         row.get("payment_channel", ""),
                         row["import_hash"],
-                        row.get("reimbursement_status", ""),
+                        normalise_new_status(
+                            row["trade_type"], row.get("category", ""),
+                            row.get("reimbursement_status", ""),
+                        ),
                         row.get("life_tag", ""),
                     ),
                 )
@@ -230,6 +236,19 @@ def update_transaction(
 
 
 # ── 查询操作 ────────────────────────────────────────────────────────
+def _parse_keyword_expression(keyword: str) -> list[list[str]]:
+    """解析全局搜索表达式：AND/且 优先于 OR/或。"""
+    expression = keyword.strip()
+    if not expression:
+        return []
+    or_groups = re.split(r"\s+\bOR\b\s+|或", expression, flags=re.IGNORECASE)
+    return [
+        [term.strip() for term in re.split(r"\s+\bAND\b\s+|且", group, flags=re.IGNORECASE) if term.strip()]
+        for group in or_groups
+        if group.strip()
+    ]
+
+
 def query_transactions(
     year_month: Optional[str],
     page: int = 1,
@@ -242,7 +261,7 @@ def query_transactions(
         year_month: "2026-07" 格式；传入 None 时查询全部月份。
         page: 页码，从 1 开始；仅 page_size 非空时生效。
         page_size: 每页条数；传入 None 时返回全部匹配记录。
-        keyword: 搜索关键字，模糊匹配备注、分类、交易对方。
+        keyword: 搜索表达式，模糊匹配备注、分类、交易对方；支持 AND/且、OR/或。
 
     Returns:
         (rows, total_count)
@@ -255,9 +274,17 @@ def query_transactions(
         params.append(year_month)
 
     if keyword:
-        conditions.append("(remark LIKE ? OR category LIKE ? OR counterparty LIKE ?)")
-        like = f"%{keyword}%"
-        params.extend([like, like, like])
+        keyword_groups = _parse_keyword_expression(keyword)
+        group_clauses = []
+        for terms in keyword_groups:
+            term_clauses = []
+            for term in terms:
+                term_clauses.append("(remark LIKE ? OR category LIKE ? OR counterparty LIKE ?)")
+                like = f"%{term}%"
+                params.extend([like, like, like])
+            group_clauses.append("(" + " AND ".join(term_clauses) + ")")
+        if group_clauses:
+            conditions.append("(" + " OR ".join(group_clauses) + ")")
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 

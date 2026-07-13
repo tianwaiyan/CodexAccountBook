@@ -61,7 +61,8 @@
       { key: "备注", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
       { key: "支付方式", width: 120, kind: "text" },
     ];
-    const state = { version: null, rows: [], args: {}, mode: "view", selected: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, tagging: false, dragKey: null };
+    const DRAFT_KEY_PREFIX = "account_book_transaction_editor_draft_v2";
+    const state = { version: null, rows: [], draftRows: new Map(), draftSessionId: "", args: {}, mode: "view", selected: new Set(), deletedIds: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, confirmingDelete: false, tagging: false, categorizing: false, dragKey: null };
     const message = (type, data = {}) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
     const setValue = value => message("streamlit:setComponentValue", { value });
     const setHeight = () => message("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
@@ -94,17 +95,87 @@
       catch (_) { return new Set(); }
     };
     const persistSelection = () => localStorage.setItem(state.selectionKey, JSON.stringify([...state.selected]));
+    const draftStorageKey = (sessionId = state.draftSessionId) =>
+      sessionId ? `${DRAFT_KEY_PREFIX}:${sessionId}` : "";
+    const loadDraftState = sessionId => {
+      try {
+        const key = draftStorageKey(sessionId);
+        const stored = key ? JSON.parse(localStorage.getItem(key) || "{}") : {};
+        const rows = Array.isArray(stored.rows) ? stored.rows : [];
+        const deletedIds = Array.isArray(stored.deleted_ids) ? stored.deleted_ids : [];
+        return {
+          rows: new Map(rows.map(row => [String(row["记录ID"]), row])),
+          deletedIds: new Set(deletedIds.map(String)),
+        };
+      } catch (_) { return { rows: new Map(), deletedIds: new Set() }; }
+    };
+    const saveDraftState = () => {
+      const key = draftStorageKey();
+      if (state.mode === "edit" && key) {
+        localStorage.setItem(key, JSON.stringify({
+          rows: [...state.draftRows.values()],
+          deleted_ids: [...state.deletedIds],
+        }));
+      }
+    };
+    const clearDraftState = sessionId => {
+      const key = draftStorageKey(sessionId);
+      if (key) localStorage.removeItem(key);
+    };
+    const syncDraftRows = () => {
+      if (state.mode !== "edit") return;
+      state.rows.forEach(row => state.draftRows.set(String(row["记录ID"]), JSON.parse(JSON.stringify(row))));
+      saveDraftState();
+    };
+    const filterDraftRows = rows => {
+      const filters = state.args.filters || {};
+      const accounts = new Set(filters.accounts || []);
+      const tradeTypes = new Set(filters.trade_types || []);
+      const categories = new Set(filters.categories || []);
+      const lifeTags = new Set(filters.life_tags || []);
+      const matchesValue = (value, values) => !values.size || values.has(String(value || "")) || (values.has("空白") && !value);
+      const amountMin = filters.amount_min == null ? null : Number(filters.amount_min);
+      const amountMax = filters.amount_max == null ? null : Number(filters.amount_max);
+      return rows.filter(row => {
+        if (!matchesValue(row["账户"], accounts)) return false;
+        if (!matchesValue(row["收支"], tradeTypes)) return false;
+        if (!matchesValue(row["分类"], categories)) return false;
+        if (!matchesValue(row["标签"], lifeTags)) return false;
+        const amount = Math.abs(Number(row["金额"]));
+        if (amountMin !== null && (!Number.isFinite(amount) || amount < amountMin)) return false;
+        if (amountMax !== null && (!Number.isFinite(amount) || amount > amountMax)) return false;
+        return true;
+      });
+    };
+    const selectedCategoryTradeType = () => {
+      const types = new Set(state.rows
+        .filter(row => state.selected.has(String(row["记录ID"])))
+        .map(row => row["收支"]));
+      if (types.size !== 1) return "";
+      const [tradeType] = types;
+      return ["支出", "收入"].includes(tradeType) ? tradeType : "";
+    };
     const columns = () => state.layout.order.map(key => baseColumns().find(col => col.key === key));
     const columnIndex = key => columns().findIndex(col => col.key === key);
-    const rowClass = row => row["分类"] !== "公费垫付" ? "" : row["报销状态"] === "待报销" ? "pending" : row["报销状态"] === "已结清" ? "settled" : "";
+    const statusRuleFor = row => state.args.status_rules?.[row["分类"]] || null;
+    const rowClass = row => {
+      if (row["分类"] === "公费垫付") {
+        return row["报销状态"] === "待报销" ? "pending" : row["报销状态"] === "已结清" ? "settled" : "";
+      }
+      if (row["分类"] === "过手转入") {
+        return row["报销状态"] === "待转出" ? "pending" : row["报销状态"] === "已转出" ? "settled" : "";
+      }
+      return "";
+    };
     const normaliseRow = (row, field) => {
       if (field === "收支") {
         const allowed = row["收支"] === "收入" ? state.args.income_categories : state.args.expense_categories;
         if (row["分类"] && !allowed.includes(row["分类"])) row["分类"] = "";
       }
       if (field === "收支" || field === "分类") {
-        if (row["分类"] === "公费垫付") {
-          if (!["待报销", "已结清"].includes(row["报销状态"])) row["报销状态"] = "待报销";
+        const statusRule = statusRuleFor(row);
+        if (statusRule) {
+          if (!statusRule.statuses.includes(row["报销状态"])) row["报销状态"] = statusRule.default;
         } else row["报销状态"] = "";
       }
       if (row["收支"] !== "支出") row["标签"] = "";
@@ -117,7 +188,7 @@
           ? (state.args.income_categories || []) : (state.args.expense_categories || []);
         return Array.from(new Set([...categories, row["分类"] || ""]));
       }
-      if (key === "报销状态") return state.args.reimbursement_statuses || [];
+      if (key === "报销状态") return statusRuleFor(row)?.statuses || [];
       if (key === "标签") return state.args.life_tags || [];
       return [];
     };
@@ -143,7 +214,7 @@
       const value = row[column.key] ?? "";
       const data = `data-row="${rowIndex}" data-col="${colIndex}" data-field="${column.key}"`;
       if (column.kind === "select") {
-        const disabled = (column.key === "报销状态" && row["分类"] !== "公费垫付")
+        const disabled = (column.key === "报销状态" && !optionsFor(row, "报销状态").length)
           || (column.key === "标签" && row["收支"] !== "支出");
         return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(optionsFor(row, column.key), value)}</select></td>`;
       }
@@ -153,17 +224,22 @@
     };
     const render = () => {
       const root = document.getElementById("grid");
+      syncDraftRows();
       const previousWrap = root.querySelector(".table-wrap");
       const previousScroll = previousWrap ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft } : null;
       root.className = state.mode === "yearly-summary" ? "grid yearly-summary" : "grid";
       document.documentElement.style.setProperty("--grid-height", `${state.args.height || 500}px`);
       if (state.mode === "actions") { renderActions(root); return; }
-      if (!state.rows.length) { root.innerHTML = `<div class="empty">${state.mode === "yearly-summary" ? "当前年度没有支出记录。" : "当前没有流水。"}</div>`; setHeight(); return; }
       const cols = columns();
       const selectedCount = state.selected.size;
+      const categoryTradeType = selectedCategoryTradeType();
       const toolbar = state.mode === "edit"
-        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="set-life-tag" type="button" ${selectedCount ? "" : "disabled"}>设置标签</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="set-life-tag" type="button" ${selectedCount ? "" : "disabled"}>设置标签</button><button id="set-category" type="button" ${categoryTradeType ? "" : "disabled"}>设置分类</button><button id="delete-selected-draft" class="danger" type="button" ${selectedCount ? "" : "disabled"}>删除选中行</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
       const summaryToolbar = "";
+      if (!state.rows.length) {
+        root.innerHTML = `${toolbar}${lifeTagMarkup()}${categoryMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}<div class="empty">${state.mode === "yearly-summary" ? "当前年度没有支出记录。" : "当前编辑草稿已无流水。"}</div>`;
+        bindEvents(root); setHeight(); return;
+      }
       const selectable = state.mode === "view" || state.mode === "edit";
       const selectHeader = selectable ? `<th class="select"><input id="select-all" type="checkbox" aria-label="全选"></th>` : "";
       const selectCells = (row, index) => selectable ? `<td class="select"><input type="checkbox" data-select-id="${esc(row["记录ID"])}" ${state.selected.has(String(row["记录ID"])) ? "checked" : ""} aria-label="选择第 ${index + 1} 行"></td>` : "";
@@ -173,7 +249,7 @@
         const resizeHandle = state.mode === "yearly-summary" ? "" : `<span class="resize" data-resize="${col.key}"></span>`;
         return `<th class="${firstClass}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${col.key}</span>${resizeHandle}</th>`;
       }).join("");
-      root.innerHTML = `${toolbar}${summaryToolbar}${lifeTagMarkup()}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+      root.innerHTML = `${toolbar}${summaryToolbar}${lifeTagMarkup()}${categoryMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
       bindEvents(root);
       if (previousScroll) { const currentWrap = root.querySelector(".table-wrap"); currentWrap.scrollTop = previousScroll.top; currentWrap.scrollLeft = previousScroll.left; }
       const all = document.getElementById("select-all");
@@ -184,6 +260,16 @@
       ? '<div class="confirm-box">确定要恢复默认列布局吗？当前列宽和列顺序将被清除。<button id="confirm-reset" type="button">确认恢复</button><button id="cancel-reset" type="button">取消</button></div>' : "";
     const lifeTagMarkup = () => state.tagging
       ? `<div class="confirm-box">将为已勾选的支出设置标签；收入会自动跳过。<select id="life-tag-value">${optionHtml(state.args.life_tags || [], "")}</select><button id="confirm-life-tag" type="button">确认设置</button><button id="cancel-life-tag" type="button">取消</button></div>` : "";
+    const categoryMarkup = () => {
+      const tradeType = selectedCategoryTradeType();
+      if (!state.categorizing || !tradeType) return "";
+      const options = values => Array.from(new Set(values || []))
+        .map(item => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
+      const categories = tradeType === "支出" ? state.args.expense_categories : state.args.income_categories;
+      return `<div class="confirm-box">将为已勾选的${tradeType}设置分类。<select id="category-value"><option value="" selected disabled>请选择分类</option>${options(categories)}<option value="__clear__">清空分类</option></select><button id="confirm-category" type="button">确认设置</button><button id="cancel-category" type="button">取消</button></div>`;
+    };
+    const deleteDraftMarkup = () => state.confirmingDelete
+      ? '<div class="confirm-box">确定从编辑草稿中移除已勾选的流水吗？只有点击“保存修改”后才会删除数据库记录。<button id="confirm-delete-draft" class="danger" type="button">确认移除</button><button id="cancel-delete-draft" type="button">取消</button></div>' : "";
     const requestReset = () => { state.confirmingReset = true; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
     const applyReset = () => { localStorage.removeItem(currentLayoutKey()); state.layout = defaults(); state.confirmingReset = false; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
     const bindResetConfirmation = root => {
@@ -245,6 +331,9 @@
       if (state.mode !== "edit" || !state.active) return;
       const text = event.clipboardData?.getData("text/plain");
       if (!text) return;
+      // 普通文本在输入框内交给浏览器原生粘贴，以支持只替换当前选中的一部分字符；
+      // 只有制表符或换行分隔的内容才作为跨单元格粘贴处理。
+      if (event.target.matches("input, textarea") && !/[\t\r\n]/.test(text)) return;
       event.preventDefault();
       const matrix = text.replace(/\r/g, "").split("\n").filter((_, index, list) => index < list.length - 1 || list[index] !== "").map(line => line.split("\t"));
       const cols = columns();
@@ -276,8 +365,10 @@
       });
       document.getElementById("reset-layout")?.addEventListener("click", requestReset);
       bindResetConfirmation(root);
-      document.getElementById("save")?.addEventListener("click", () => setValue({ action: "save", rows: state.rows }));
-      document.getElementById("cancel")?.addEventListener("click", () => setValue({ action: "cancel", rows: state.rows }));
+      const draftRowsForSubmit = () => (state.args.draft_ids || [...state.draftRows.keys()])
+        .map(transactionId => state.draftRows.get(String(transactionId))).filter(Boolean);
+      document.getElementById("save")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "save", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
+      document.getElementById("cancel")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "cancel", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
       document.getElementById("set-life-tag")?.addEventListener("click", () => { state.tagging = true; render(); });
       document.getElementById("confirm-life-tag")?.addEventListener("click", () => {
         const lifeTag = document.getElementById("life-tag-value")?.value || "";
@@ -288,6 +379,31 @@
         render();
       });
       document.getElementById("cancel-life-tag")?.addEventListener("click", () => { state.tagging = false; render(); });
+      document.getElementById("set-category")?.addEventListener("click", () => { state.categorizing = true; render(); });
+      document.getElementById("confirm-category")?.addEventListener("click", () => {
+        const categoryValue = document.getElementById("category-value")?.value;
+        const targetTradeType = selectedCategoryTradeType();
+        if (!targetTradeType || !categoryValue) { state.categorizing = false; render(); return; }
+        state.rows.forEach(row => {
+          if (!state.selected.has(String(row["记录ID"]))) return;
+          if (row["收支"] === targetTradeType) {
+            row["分类"] = categoryValue === "__clear__" ? "" : categoryValue;
+            normaliseRow(row, "分类");
+          }
+        });
+        state.categorizing = false;
+        render();
+      });
+      document.getElementById("cancel-category")?.addEventListener("click", () => { state.categorizing = false; render(); });
+      document.getElementById("delete-selected-draft")?.addEventListener("click", () => { state.confirmingDelete = true; render(); });
+      document.getElementById("confirm-delete-draft")?.addEventListener("click", () => {
+        state.selected.forEach(transactionId => { state.deletedIds.add(transactionId); state.draftRows.delete(transactionId); });
+        state.rows = state.rows.filter(row => !state.selected.has(String(row["记录ID"])));
+        state.selected = new Set(); state.active = null; state.anchor = null; state.range = null;
+        state.confirmingDelete = false; state.tagging = false; state.categorizing = false;
+        render();
+      });
+      document.getElementById("cancel-delete-draft")?.addEventListener("click", () => { state.confirmingDelete = false; render(); });
       document.getElementById("select-all")?.addEventListener("change", event => { state.selected = event.target.checked ? new Set(state.rows.map(row => String(row["记录ID"]))) : new Set(); if (state.mode === "view") persistSelection(); render(); });
       root.querySelector("tbody")?.addEventListener("change", event => {
         const control = event.target;
@@ -299,7 +415,7 @@
       });
       root.querySelector("tbody")?.addEventListener("input", event => {
         const control = event.target, row = Number(control.dataset.row), field = control.dataset.field;
-        if (state.mode === "edit" && Number.isInteger(row) && field) state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
+        if (state.mode === "edit" && Number.isInteger(row) && field) { state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value; syncDraftRows(); }
       });
       root.querySelector("tbody")?.addEventListener("click", event => {
         const td = event.target.closest("td[data-row]"); if (!td) return;
@@ -312,7 +428,15 @@
         activate(Number(td.dataset.row), Number(td.dataset.col), event.shiftKey);
       });
       root.addEventListener("keydown", event => {
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") { copyRange(); return; }
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") {
+          const target = event.target;
+          const hasTextSelection = target.matches('input[type="text"], input[type="search"], input[type="url"], input[type="tel"], input[type="password"], textarea')
+            && target.selectionStart !== target.selectionEnd;
+          // 输入框内选中部分文本时，使用浏览器原生复制；未选中文字时仍复制当前单元格/区域。
+          if (hasTextSelection) return;
+          copyRange();
+          return;
+        }
         const isControl = ["INPUT", "SELECT"].includes(event.target.tagName);
         if (event.key === "Tab") { event.preventDefault(); moveActive(0, event.shiftKey ? -1 : 1); return; }
         if (!isControl && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); moveActive(event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0, event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0); }
@@ -327,13 +451,51 @@
     window.addEventListener("message", event => {
       const data = event.data; if (!data || data.type !== "streamlit:render") return;
       const args = data.args || {};
+      const nextMode = args.mode || "view";
+      const nextDraftSessionId = String(args.draft_session_id || "");
+      const sameDraftSession = nextMode === "edit" && state.draftSessionId === nextDraftSessionId;
+      const inMemoryRows = sameDraftSession ? state.draftRows : new Map();
+      const inMemoryDeletedIds = sameDraftSession ? state.deletedIds : new Set();
+      state.args = args;
+      state.mode = nextMode;
       state.selectionKey = args.selection_key || "tx_selection";
+      if (args.cleanup_draft_session_id) clearDraftState(String(args.cleanup_draft_session_id));
       if (state.version !== args.version) {
-        state.version = args.version; state.rows = JSON.parse(JSON.stringify(args.rows || [])); state.selected = new Set();
-        state.active = null; state.anchor = null; state.range = null; state.tagging = false;
+        state.version = args.version; state.selected = new Set(); state.deletedIds = new Set(args.deleted_ids || []);
+        if (state.mode === "edit") {
+          const persisted = loadDraftState(nextDraftSessionId);
+          state.draftSessionId = nextDraftSessionId;
+          const knownIds = new Set((args.draft_ids || args.rows || []).map(row => String(typeof row === "object" ? row["记录ID"] : row)));
+          state.draftRows = new Map(
+            [...persisted.rows, ...inMemoryRows].filter(([transactionId]) => knownIds.has(transactionId))
+          );
+          state.deletedIds = new Set([
+            ...(args.deleted_ids || []).map(String),
+            ...persisted.deletedIds,
+            ...inMemoryDeletedIds,
+          ]);
+          (args.rows || []).forEach(row => {
+            const transactionId = String(row["记录ID"]);
+            if (!state.draftRows.has(transactionId)) state.draftRows.set(transactionId, JSON.parse(JSON.stringify(row)));
+          });
+          state.deletedIds.forEach(transactionId => state.draftRows.delete(String(transactionId)));
+          state.rows = filterDraftRows(
+            [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
+          );
+          saveDraftState();
+        } else {
+          // 只读表格、操作栏和年度汇总表不得读取或清除整表编辑草稿。
+          state.draftRows = new Map(); state.draftSessionId = ""; state.deletedIds = new Set();
+          state.rows = JSON.parse(JSON.stringify(args.rows || []));
+        }
+        state.active = null; state.anchor = null; state.range = null; state.confirmingDelete = false; state.tagging = false; state.categorizing = false;
         if (args.mode === "view") persistSelection();
+      } else if (state.mode === "edit") {
+        // 同一个编辑组件实例在筛选重跑后继续使用内存中的完整草稿。
+        state.rows = filterDraftRows(
+          [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
+        );
       }
-      state.args = args; state.mode = args.mode || "view";
       const signature = layoutSignature();
       if (state.layoutSignature !== signature) { state.layout = loadLayout(); state.layoutSignature = signature; }
       state.dateMode = state.dateMode || loadDateMode(); render();
