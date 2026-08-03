@@ -1,0 +1,1 @@
+import sys\nsys.stdout.reconfigure(encoding=\x22utf-8\x22)\nt=open(\x22app.py\x22,\x22r\x22,encoding=\x22utf-8\x22).read()\nprint(len(t))
