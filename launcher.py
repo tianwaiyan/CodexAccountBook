@@ -5,6 +5,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -13,6 +14,39 @@ from streamlit.web import cli as stcli
 APP_TITLE = "个人记账系统"
 HOST = "127.0.0.1"
 BROWSER_DELAY_SECONDS = 2.0
+
+
+def report_startup_error(exc: Exception) -> None:
+    """Persist and display startup failures for the windowed executable."""
+    base_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
+    )
+    log_path = base_dir / "startup-error.log"
+    message = f"{APP_TITLE}启动失败：{exc}"
+    details = f"{message}\n\n{traceback.format_exc()}"
+
+    try:
+        log_path.write_text(details, encoding="utf-8")
+    except OSError:
+        pass
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"{message}\n\n详细信息已写入：\n{log_path}",
+                APP_TITLE,
+                0x10,
+            )
+            return
+        except Exception:
+            pass
+
+    print(details, file=sys.stderr)
 
 
 def resource_path(filename: str) -> Path:
@@ -89,5 +123,5 @@ if __name__ == "__main__":
     try:
         run()
     except Exception as exc:
-        print(f"{APP_TITLE} 启动失败：{exc}")
-        input("按回车键退出...")
+        report_startup_error(exc)
+        raise SystemExit(1)

@@ -19,3 +19,6 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+.venv-build/
+.package-staging/
