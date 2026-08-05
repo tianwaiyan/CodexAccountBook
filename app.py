@@ -20,6 +20,8 @@ import uuid
 import db
 import status_rules as sr
 from local_transaction_editor import (
+    local_table_viewer,
+    option_editor,
     transaction_actions,
     transaction_editor,
     transaction_viewer,
@@ -91,24 +93,20 @@ STYLE = """
 st.markdown(STYLE, unsafe_allow_html=True)
 
 # ── 常量 ─────────────────────────────────────────────────────────────
-ACCOUNTS = [
-    "支付宝", "微信", "手动录入", "现金", "北京银行卡", "中国银行卡",
-    "交通银行卡", "美团月付",
-]
-TRADE_TYPES = ["支出", "收入"]
-EXPENSE_CATEGORIES = [
-    "生活费用", "伙食费用", "交通出行", "休闲娱乐", "办公学习", "外出旅游",
-    "医疗保健", "服饰鞋帽", "非日用品", "其它支出", "过手转出", "公费垫付",
-]
-INCOME_CATEGORIES = [
-    "工资收入", "生活费收入", "转账收入", "银行利息",
-    "兼职收入", "其它收入", "过手转入", "垫付报销",
-]
-PUBLIC_EXPENSE_CATEGORY = "公费垫付"
-REIMBURSEMENT_CATEGORY = "垫付报销"
-PASS_THROUGH_EXPENSE_CATEGORY = "过手转出"
-PASS_THROUGH_INCOME_CATEGORY = "过手转入"
-LIFE_TAGS = ["生存刚需", "品质生活", "自我投资", "人情往来"]
+ACCOUNTS = db.get_option_values("account")
+TRADE_TYPES = ["支出", "退款", "收入"]
+EXPENSE_CATEGORIES = db.get_option_values("expense_category")
+INCOME_CATEGORIES = db.get_option_values("income_category")
+SPECIAL_CATEGORIES = db.get_special_categories()
+PUBLIC_EXPENSE_CATEGORY = SPECIAL_CATEGORIES["public_expense"]
+REIMBURSEMENT_CATEGORY = SPECIAL_CATEGORIES["reimbursement"]
+PASS_THROUGH_EXPENSE_CATEGORY = SPECIAL_CATEGORIES["pass_through_expense"]
+PASS_THROUGH_INCOME_CATEGORY = SPECIAL_CATEGORIES["pass_through_income"]
+EXPENSE_TAGS = db.get_option_values("expense_tag")
+INCOME_TAGS = db.get_option_values("income_tag")
+INCOME_CATEGORY_TAGS = db.get_income_category_tag_mappings()
+EXPENSE_CATEGORY_TAGS = db.get_expense_category_tag_mappings()
+STATUS_RULES = db.get_status_rules()
 EMPTY_FILTER_OPTION = "空白"
 
 
@@ -123,6 +121,52 @@ def _format_money(value: float) -> str:
     return f"-¥{abs(value):,.2f}"
 
 
+def _format_amount_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """将表格中的金额字段格式化为两位小数，不改写数据库数据。"""
+    formatted = frame.copy()
+    for column in ("amount", "金额"):
+        if column in formatted.columns:
+            formatted[column] = formatted[column].map(
+                lambda value: "" if pd.isna(value) else f"{float(value):.2f}"
+            )
+
+
+    return formatted
+
+
+def _render_local_table(
+    frame: pd.DataFrame,
+    *,
+    table_key: str,
+    empty_message: str = "暂无数据。",
+    height: int = 360,
+) -> None:
+    """使用统一的本地表格组件展示页面中的只读数据。"""
+    display_frame = frame.copy().where(pd.notna(frame), "")
+    for column in display_frame.columns:
+        display_frame[column] = display_frame[column].map(
+            lambda value: value.isoformat(sep=" ")
+            if isinstance(value, (pd.Timestamp, datetime)) else str(value)
+        )
+    columns = [
+        {
+            "key": str(column),
+            "label": str(column),
+            "width": max(95, min(220, len(str(column)) * 22 + 70)),
+        }
+        for column in display_frame.columns
+    ]
+    rows = display_frame.to_dict(orient="records")
+    version = hash(display_frame.to_json(force_ascii=False, date_format="iso"))
+    local_table_viewer(
+        rows=rows,
+        columns=columns,
+        version=version,
+        layout_key=f"account_book_{table_key}_layout_v1",
+        empty_message=empty_message,
+        height=height,
+        key=f"{table_key}_{version}",
+    )
 # ── 流水列表编辑辅助 ──────────────────────────────────────────────────
 TX_EDITOR_COLUMNS = ["时间", "账户", "收支", "金额", "分类", "标签", "报销状态", "备注", "对方", "支付方式"]
 
@@ -154,10 +198,15 @@ def _reset_tx_editor() -> None:
 
 def _categories_for_trade_type(trade_type: str, current_category: str = "") -> list[str]:
     """返回指定收支类型的分类，兼容保留历史导入分类。"""
-    categories = EXPENSE_CATEGORIES if trade_type == "支出" else INCOME_CATEGORIES
+    categories = EXPENSE_CATEGORIES if sr.uses_expense_categories(trade_type) else INCOME_CATEGORIES
     if current_category and current_category not in categories:
         categories = [*categories, current_category]
     return categories
+
+def _tag_options_for_trade_type(trade_type: str) -> list[str]:
+    """返回指定收支类型的标签选项。"""
+    return sr.tag_options(trade_type, EXPENSE_TAGS, INCOME_TAGS)
+
 
 
 def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFrame | None) -> pd.DataFrame:
@@ -180,9 +229,8 @@ def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFr
         if trade_type != original_trade_type and category not in _categories_for_trade_type(trade_type):
             category = ""
 
-        status = sr.normalise_new_status(trade_type, category, status)
-        if trade_type != "支出" or life_tag not in LIFE_TAGS:
-            life_tag = ""
+        status = sr.normalise_new_status(trade_type, category, status, STATUS_RULES)
+        life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
 
         normalised.at[index, "分类"] = category
         normalised.at[index, "标签"] = life_tag
@@ -317,10 +365,10 @@ def _editor_row_to_db(row: pd.Series) -> dict:
 
     account = _text_value(row["账户"])
     trade_type = _text_value(row["收支"])
-    if account not in ACCOUNTS:
-        raise ValueError("账户必须为支付宝、微信或手动录入")
+    if not account:
+        raise ValueError("账户不能为空")
     if trade_type not in TRADE_TYPES:
-        raise ValueError("收支必须为支出或收入")
+        raise ValueError("收支必须为支出、退款或收入")
 
     try:
         amount = float(row["金额"])
@@ -336,22 +384,22 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         raise ValueError("公费垫付只能归入支出")
     if category == REIMBURSEMENT_CATEGORY and trade_type != "收入":
         raise ValueError("垫付报销只能归入收入")
-    allowed_statuses = sr.status_options(trade_type, category)
+    allowed_statuses = sr.status_options(trade_type, category, STATUS_RULES)
     if not allowed_statuses:
         reimbursement_status = ""
     elif reimbursement_status and reimbursement_status not in allowed_statuses:
-        reimbursement_status = sr.default_status(trade_type, category)
-    if trade_type != "支出":
-        life_tag = ""
-    elif life_tag not in ("", *LIFE_TAGS):
-        raise ValueError("标签必须为空、生存刚需、品质生活、自我投资或人情往来")
+        reimbursement_status = sr.default_status(trade_type, category, STATUS_RULES)
+    allowed_tags = _tag_options_for_trade_type(trade_type)
+    if life_tag not in ("", *allowed_tags):
+        raise ValueError(f"标签必须为空或有效的{trade_type}标签")
+    life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
 
     return {
         "id": _text_value(row["记录ID"]),
         "trade_time": parsed_time.strftime("%Y-%m-%d %H:%M:%S"),
         "account": account,
         "trade_type": trade_type,
-        "amount": amount if trade_type == "收入" else -amount,
+        "amount": amount if trade_type in ("收入", "退款") else -amount,
         "category": category,
         "life_tag": life_tag,
         "reimbursement_status": reimbursement_status,
@@ -689,7 +737,7 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
     original_category = _text_value(row["分类"])
     category_options = _categories_for_trade_type(original_trade_type, original_category)
     current_status = _text_value(row.get("报销状态", ""))
-    status_options = sr.status_options(original_trade_type, original_category)
+    status_options = sr.status_options(original_trade_type, original_category, STATUS_RULES)
     if not status_options:
         status_options = [""]
     elif current_status not in status_options:
@@ -701,8 +749,11 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
         with row1_col1:
             trade_time = st.datetime_input("交易时间", value=default_time)
         with row1_col2:
-            account = st.selectbox("账户", ACCOUNTS,
-                                   index=ACCOUNTS.index(_text_value(row["账户"])))
+            account_options = list(dict.fromkeys([*ACCOUNTS, _text_value(row["账户"])]))
+            account = st.selectbox(
+                "账户", account_options,
+                index=account_options.index(_text_value(row["账户"])),
+            )
         with row1_col3:
             trade_type = st.selectbox("收支类型", TRADE_TYPES,
                                        index=TRADE_TYPES.index(_text_value(row["收支"])))
@@ -716,12 +767,15 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             category = st.selectbox("分类", category_options,
                                     index=category_options.index(original_category))
         with row2_col3:
-            current_life_tag = _text_value(row.get("标签", ""))
-            tag_options = ["", *LIFE_TAGS]
+            current_life_tag = sr.normalise_life_tag(
+                original_trade_type, original_category,
+                _text_value(row.get("标签", "")),
+                EXPENSE_TAGS, INCOME_TAGS,
+            )
+            tag_options = ["", *_tag_options_for_trade_type(original_trade_type)]
             life_tag = st.selectbox(
                 "标签", tag_options,
                 index=tag_options.index(current_life_tag) if current_life_tag in tag_options else 0,
-                disabled=trade_type != "支出",
             )
 
         row3_col1, row3_col2, row3_col3 = st.columns(3)
@@ -754,22 +808,28 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             category = ""
         if trade_type != original_trade_type or category != original_category:
             reimbursement_status = sr.normalise_new_status(
-                trade_type, category, reimbursement_status
+                trade_type, category, reimbursement_status, STATUS_RULES
             )
         else:
-            allowed_statuses = sr.status_options(trade_type, category)
+            allowed_statuses = sr.status_options(trade_type, category, STATUS_RULES)
             if not allowed_statuses:
                 reimbursement_status = ""
             elif reimbursement_status and reimbursement_status not in allowed_statuses:
-                reimbursement_status = sr.default_status(trade_type, category)
-        if trade_type != "支出":
-            life_tag = ""
+                reimbursement_status = sr.default_status(trade_type, category, STATUS_RULES)
+        if trade_type != original_trade_type or category != original_category:
+            life_tag = sr.default_life_tag(
+                trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS
+            ) or sr.normalise_life_tag(
+                trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS
+            )
+        else:
+            life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
         values = {
             "id": _text_value(row["记录ID"]),
             "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
             "account": account,
             "trade_type": trade_type,
-            "amount": amount if trade_type == "收入" else -amount,
+            "amount": amount if trade_type in ("收入", "退款") else -amount,
             "category": category.strip(),
             "life_tag": life_tag,
             "reimbursement_status": reimbursement_status,
@@ -853,7 +913,9 @@ def _render_reimbursement_list() -> None:
         "amount": "金额", "reimbursement_status": "报销状态",
     })
     st.subheader("报销清单")
-    st.dataframe(frame, use_container_width=True, hide_index=True)
+    _render_local_table(
+        _format_amount_columns(frame), table_key="reimbursement_records", height=360
+    )
 
 
 def _render_monthly_trend() -> None:
@@ -959,19 +1021,24 @@ def _render_category_pie(month: str) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_account_pie(month: str) -> None:
-    """本月支出账户分布（数据由 SQL 聚合）。"""
-    stats = db.get_account_stats(month)
+def _render_tag_pie(month: str, trade_type: str) -> None:
+    """渲染本月收入或净支出的标签占比饼图。"""
+    if trade_type == "收入":
+        stats = db.get_monthly_income_tag_stats(month)
+        title = f"{month} 收入标签占比"
+        empty_message = "本月暂无收入标签记录。"
+    else:
+        stats = db.get_monthly_expense_tag_stats(month)
+        title = f"{month} 支出标签占比"
+        empty_message = "本月暂无支出标签记录。"
     if not stats:
-        st.info("本月暂无支出记录。")
+        st.info(empty_message)
         return
 
     df = pd.DataFrame(stats)
     fig = px.pie(
-        df, names="account", values="total", hole=0.45,
-        title=f"{month} 支出账户",
-        color="account",
-        color_discrete_map={"支付宝": "#1677ff", "微信": "#07c160", "手动录入": "#f59e0b"},
+        df, names="life_tag", values="total", hole=0.45,
+        title=title,
     )
     fig.update_traces(textposition="inside", textinfo="percent+label")
     fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=400)
@@ -1037,11 +1104,13 @@ def page_dashboard() -> None:
     st.divider()
     _render_monthly_trend()
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         _render_category_pie(selected_month)
     with col2:
-        _render_account_pie(selected_month)
+        _render_tag_pie(selected_month, "收入")
+    with col3:
+        _render_tag_pie(selected_month, "支出")
 
     st.divider()
     _render_reimbursement_list()
@@ -1068,7 +1137,7 @@ def _validate_tx_bulk_category(row: pd.Series, original: pd.Series | None) -> No
     """校验整表编辑时收支与分类的兼容性，并保留未修改的历史分类。"""
     trade_type = _text_value(row["收支"])
     category = _text_value(row["分类"])
-    allowed = EXPENSE_CATEGORIES if trade_type == "支出" else INCOME_CATEGORIES
+    allowed = EXPENSE_CATEGORIES if sr.uses_expense_categories(trade_type) else INCOME_CATEGORIES
     original_trade_type = _text_value(original["收支"]) if original is not None else ""
     original_category = _text_value(original["分类"]) if original is not None else ""
 
@@ -1203,8 +1272,11 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame) -> None:
         trade_types=trade_type_options,
         expense_categories=EXPENSE_CATEGORIES,
         income_categories=INCOME_CATEGORIES,
-        status_rules=sr.STATUS_RULES_BY_CATEGORY,
-        life_tags=LIFE_TAGS,
+        status_rules=STATUS_RULES,
+        expense_tags=EXPENSE_TAGS,
+        income_tags=INCOME_TAGS,
+        income_category_tags=INCOME_CATEGORY_TAGS,
+        expense_category_tags=EXPENSE_CATEGORY_TAGS,
         deleted_ids=st.session_state.get("tx_edit_deleted_ids", []),
         draft_ids=[_text_value(value) for value in draft["记录ID"]],
         draft_session_id=st.session_state.get("tx_edit_session_id", ""),
@@ -1493,10 +1565,16 @@ def page_import() -> None:
                 total_skipped += skipped
                 st.success(f"支付宝：新增 {inserted} 条，跳过 {skipped} 条（重复），剔除 {len(excluded_rows)} 条（自动过滤）")
                 with st.expander("预览支付宝导入记录"):
-                    st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True)
+                    _render_local_table(
+                        _format_amount_columns(pd.DataFrame(preview)),
+                        table_key="alipay_import_preview",
+                    )
                 if excluded_rows:
                     with st.expander(f"支付宝自动过滤记录 ({len(excluded_rows)} 条)"):
-                        st.dataframe(pd.DataFrame(excluded_rows), use_container_width=True, hide_index=True)
+                        _render_local_table(
+                            _format_amount_columns(pd.DataFrame(excluded_rows)),
+                            table_key="alipay_excluded_preview",
+                        )
                         st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
                 if excluded_rows:
                     st.session_state["excluded_records"].extend(excluded_rows)
@@ -1510,10 +1588,16 @@ def page_import() -> None:
                 total_skipped += skipped
                 st.success(f"微信：新增 {inserted} 条，跳过 {skipped} 条（重复），剔除 {len(excluded_rows)} 条（自动过滤）")
                 with st.expander("预览微信导入记录"):
-                    st.dataframe(pd.DataFrame(preview), use_container_width=True, hide_index=True)
+                    _render_local_table(
+                        _format_amount_columns(pd.DataFrame(preview)),
+                        table_key="wechat_import_preview",
+                    )
                 if excluded_rows:
                     with st.expander(f"微信自动过滤记录 ({len(excluded_rows)} 条)"):
-                        st.dataframe(pd.DataFrame(excluded_rows), use_container_width=True, hide_index=True)
+                        _render_local_table(
+                            _format_amount_columns(pd.DataFrame(excluded_rows)),
+                            table_key="wechat_excluded_preview",
+                        )
                         st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
                     st.session_state["excluded_records"].extend(excluded_rows)
             except Exception as exc:
@@ -1546,7 +1630,10 @@ def page_import() -> None:
     if st.session_state["excluded_records"]:
         st.divider()
         with st.expander(f"📋 历史自动过滤记录 ({len(st.session_state['excluded_records'])} 条)", expanded=True):
-            st.dataframe(pd.DataFrame(st.session_state["excluded_records"]), use_container_width=True, hide_index=True)
+            _render_local_table(
+                _format_amount_columns(pd.DataFrame(st.session_state["excluded_records"])),
+                table_key="excluded_records_history",
+            )
             st.caption("以下记录已被自动过滤未导入，如发现误排除请手动补录。")
         if st.button("🗑️ 清除过滤记录", use_container_width=True, type="secondary"):
             st.session_state["excluded_records"] = []
@@ -1559,10 +1646,26 @@ def page_import() -> None:
 def page_manual() -> None:
     if "manual_trade_type" not in st.session_state:
         st.session_state["manual_trade_type"] = "支出"
-    trade_type = st.selectbox("收支类型", TRADE_TYPES, key="manual_trade_type")
+    type_col, category_col = st.columns(2)
+    with type_col:
+        trade_type = st.selectbox("收支类型", TRADE_TYPES, key="manual_trade_type")
     category_options = _categories_for_trade_type(trade_type)
     if st.session_state.get("manual_category") not in category_options:
         st.session_state["manual_category"] = category_options[0]
+    with category_col:
+        category = st.selectbox("分类", category_options, key="manual_category")
+
+    tag_options = _tag_options_for_trade_type(trade_type)
+    category_changed = st.session_state.get("manual_tag_category") != (trade_type, category)
+    automatic_tag = sr.default_life_tag(
+        trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS
+    )
+    if category_changed and automatic_tag:
+        st.session_state["manual_life_tag"] = automatic_tag
+    elif st.session_state.get("manual_life_tag") not in ("", *tag_options):
+        st.session_state["manual_life_tag"] = ""
+    st.session_state["manual_tag_category"] = (trade_type, category)
+
 
     with st.form("manual_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -1571,17 +1674,15 @@ def page_manual() -> None:
             amount = st.number_input("金额", min_value=0.01, value=0.01, step=0.01, format="%.2f")
         with col2:
             account = st.selectbox("账户", ACCOUNTS)
-            category = st.selectbox("分类", category_options, key="manual_category")
             life_tag = st.selectbox(
-                "标签", ["", *LIFE_TAGS],
-                disabled=trade_type != "支出",
+                "标签", ["", *tag_options],
                 key="manual_life_tag",
             )
-            manual_status_options = sr.status_options(trade_type, category)
+            manual_status_options = sr.status_options(trade_type, category, STATUS_RULES)
             reimbursement_status = st.selectbox(
                 "报销状态",
                 manual_status_options or [""],
-                index=(manual_status_options.index(sr.default_status(trade_type, category))
+                index=(manual_status_options.index(sr.default_status(trade_type, category, STATUS_RULES))
                        if manual_status_options else 0),
                 disabled=not manual_status_options,
             )
@@ -1598,18 +1699,146 @@ def page_manual() -> None:
                     trade_type=trade_type,
                     amount=amount,
                     category=category,
-                    life_tag=life_tag,
+                    life_tag=sr.normalise_life_tag(
+                        trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS
+                    ),
                     reimbursement_status=reimbursement_status,
                     remark=remark,
                     counterparty=counterparty,
                     payment_channel=payment_channel,
                 )
                 if ok:
-                    st.success("记录已保存！")
+                    st.session_state["manual_tag_category"] = None
                 else:
+                    st.success("记录已保存！")
                     st.warning("该记录可能已存在（重复），未重复添加。")
             except Exception as exc:
                 st.error(f"保存失败：{exc}")
+
+
+OPTION_TYPE_LABELS = {
+    "account": "账户",
+    "expense_category": "支出分类",
+    "income_category": "收入分类",
+    "expense_tag": "支出标签",
+    "income_tag": "收入标签",
+}
+
+
+def _render_option_manager(option_type: str, *, mapping_type: str | None = None) -> None:
+    """编辑一类可选项；重命名同步历史流水，删除仅移出可选列表。"""
+    label = OPTION_TYPE_LABELS[option_type]
+    items = db.get_option_items(option_type)
+    mappings = db.get_category_tag_mappings(mapping_type) if mapping_type else {}
+    mapping_tags = INCOME_TAGS if mapping_type == "income_category" else EXPENSE_TAGS
+    rows = []
+    for item in items:
+        row = {"原名称": item["value"], "名称": item["value"], "删除": False}
+        if mapping_type:
+            row["自动关联标签"] = mappings.get(item["value"], "")
+        rows.append(row)
+
+    option_columns = [
+        {"key": "名称", "label": "名称", "kind": "text", "width": 180},
+    ]
+    if mapping_type:
+        option_columns.append(
+            {
+                "key": "自动关联标签",
+                "label": "自动关联标签",
+                "kind": "select",
+                "options": ["", *mapping_tags],
+                "width": 180,
+            }
+        )
+    option_columns.append({"key": "删除", "label": "删除", "kind": "checkbox", "width": 80})
+    version_key = f"option_manager_version_{option_type}"
+    result = option_editor(
+        rows=rows,
+        columns=option_columns,
+        version=st.session_state.get(version_key, 0),
+        layout_key=f"account_book_option_manager_{option_type}_v1",
+        height=min(max(180, 76 + len(rows) * 36), 480),
+        key=f"option_editor_{option_type}",
+    )
+
+    add_col, action_col = st.columns([3, 1])
+    with add_col:
+        new_value = st.text_input(f"新增{label}", key=f"new_option_{option_type}")
+    with action_col:
+        st.write("")
+        add_clicked = st.button("新增", key=f"add_option_{option_type}", use_container_width=True)
+    if add_clicked:
+        try:
+            db.add_option_value(option_type, new_value)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+            st.rerun()
+
+    if isinstance(result, dict) and result.get("action") == "save":
+        edited = pd.DataFrame(result.get("rows", []))
+        required_columns = {"原名称", "名称", "删除"}
+        if required_columns - set(edited.columns):
+            st.error("选项表格返回的数据不完整，请重新编辑后保存。")
+            return
+        renamed_or_kept = edited.loc[~edited["删除"]].copy()
+        values = [str(value).strip() for value in renamed_or_kept["名称"]]
+        if not values or any(not value for value in values):
+            st.error("至少保留一个条目，且名称不能为空。")
+            return
+        if len(values) != len(set(values)):
+            st.error("名称不能重复。")
+            return
+        old_values = set(edited["原名称"].astype(str))
+        rename_targets = {
+            str(row["原名称"]): str(row["名称"]).strip()
+            for _, row in renamed_or_kept.iterrows()
+            if str(row["原名称"]) != str(row["名称"]).strip()
+        }
+        retained_old_values = old_values - set(edited.loc[edited["删除"], "原名称"].astype(str))
+        occupied_targets = set(rename_targets.values()) & retained_old_values
+        if occupied_targets:
+            st.error(f"请先使用未占用的名称：{'、'.join(sorted(occupied_targets))} 已存在。")
+            return
+        try:
+            for _, row in edited.loc[edited["删除"]].iterrows():
+                db.delete_option_value(option_type, str(row["原名称"]))
+            for old_value, new_value in rename_targets.items():
+                db.rename_option_value(option_type, old_value, new_value)
+            if mapping_type:
+                for _, row in renamed_or_kept.iterrows():
+                    db.set_category_tag_mapping(
+                        mapping_type,
+                        str(row["名称"]).strip(),
+                        str(row.get("自动关联标签", "") or "").strip(),
+                    )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.success(f"{label}已更新。删除的条目仍会保留在历史流水中。")
+            st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+            st.rerun()
+
+
+def page_option_management() -> None:
+    st.caption("可维护账户、分类和标签。重命名会同步既有流水；删除仅移出后续可选项，不会删除账目。")
+    account_tab, category_tab, tag_tab = st.tabs(["账户", "分类", "标签"])
+    with account_tab:
+        _render_option_manager("account")
+    with category_tab:
+        expense_tab, income_tab = st.tabs(["支出分类（含退款）", "收入分类"])
+        with expense_tab:
+            _render_option_manager("expense_category", mapping_type="expense_category")
+        with income_tab:
+            _render_option_manager("income_category", mapping_type="income_category")
+    with tag_tab:
+        expense_tag_tab, income_tag_tab = st.tabs(["支出标签（含退款）", "收入标签"])
+        with expense_tag_tab:
+            _render_option_manager("expense_tag")
+        with income_tag_tab:
+            _render_option_manager("income_tag")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1622,6 +1851,7 @@ def main() -> None:
         "流水列表": page_transactions,
         "导入账单": page_import,
         "手动记账": page_manual,
+        "选项管理": page_option_management,
     }
 
     if "current_page" not in st.session_state:

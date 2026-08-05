@@ -26,7 +26,10 @@ def transaction_editor(
     expense_categories: list[str],
     income_categories: list[str],
     status_rules: dict[str, dict[str, object]],
-    life_tags: list[str],
+    expense_tags: list[str],
+    income_tags: list[str],
+    income_category_tags: dict[str, str],
+    expense_category_tags: dict[str, str],
     deleted_ids: list[str],
     draft_ids: list[str],
     draft_session_id: str,
@@ -44,7 +47,10 @@ def transaction_editor(
         expense_categories=expense_categories,
         income_categories=income_categories,
         status_rules=status_rules,
-        life_tags=life_tags,
+        expense_tags=expense_tags,
+        income_tags=income_tags,
+        income_category_tags=income_category_tags,
+        expense_category_tags=expense_category_tags,
         deleted_ids=deleted_ids,
         draft_ids=draft_ids,
         draft_session_id=draft_session_id,
@@ -94,6 +100,52 @@ def yearly_category_viewer(
         version=version,
         year=year,
         summary_first_key=columns[0]["key"] if columns else "",
+        height=height,
+        default=None,
+        key=key,
+    )
+
+
+def local_table_viewer(
+    *,
+    rows: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    version: int,
+    layout_key: str,
+    empty_message: str,
+    height: int = 360,
+    key: str | None = None,
+) -> None:
+    """用统一的本地表格样式展示任意只读数据。"""
+    _COMPONENT(
+        mode="generic-view",
+        rows=rows,
+        columns=columns,
+        version=version,
+        layout_key=layout_key,
+        empty_message=empty_message,
+        height=height,
+        default=None,
+        key=key,
+    )
+
+
+def option_editor(
+    *,
+    rows: list[dict[str, Any]],
+    columns: list[dict[str, Any]],
+    version: int,
+    layout_key: str,
+    height: int = 360,
+    key: str | None = None,
+) -> dict[str, Any] | None:
+    """用统一的本地表格样式编辑选项，仅保存时回传。"""
+    return _COMPONENT(
+        mode="option-edit",
+        rows=rows,
+        columns=columns,
+        version=version,
+        layout_key=layout_key,
         height=height,
         default=None,
         key=key,

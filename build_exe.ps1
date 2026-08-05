@@ -86,7 +86,12 @@ Write-Host "[2/7] Installing the locked build dependencies..."
 if (-not (Test-Path -LiteralPath $BuildLockPath -PathType Leaf)) {
     throw "Missing dependency lock file: $BuildLockPath"
 }
-& $BuildPython -m pip install --disable-pip-version-check --requirement $BuildLockPath
+$PipIndexUrl = $env:PIP_INDEX_URL
+if ([string]::IsNullOrWhiteSpace($PipIndexUrl)) {
+    $PipIndexUrl = "https://pypi.tuna.tsinghua.edu.cn/simple"
+}
+$PipTrustedHost = ([System.Uri]$PipIndexUrl).Host
+& $BuildPython -m pip install --disable-pip-version-check --index-url $PipIndexUrl --trusted-host $PipTrustedHost --requirement $BuildLockPath
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install the locked build dependencies."
 }
@@ -107,12 +112,12 @@ Write-Host "[4/7] Building the application with PyInstaller..."
     --distpath $StagingDistPath `
     --workpath $StagingWorkPath `
     --specpath $StagingRoot `
-    --add-data "app.py;." `
-    --add-data "db.py;." `
-    --add-data "parser.py;." `
-    --add-data "status_rules.py;." `
-    --add-data "local_transaction_editor.py;." `
-    --add-data "components;components" `
+    --add-data ((Join-Path $ProjectRoot "app.py") + ";.") `
+    --add-data ((Join-Path $ProjectRoot "db.py") + ";.") `
+    --add-data ((Join-Path $ProjectRoot "parser.py") + ";.") `
+    --add-data ((Join-Path $ProjectRoot "status_rules.py") + ";.") `
+    --add-data ((Join-Path $ProjectRoot "local_transaction_editor.py") + ";.") `
+    --add-data ((Join-Path $ProjectRoot "components") + ";components") `
     --hidden-import db `
     --hidden-import parser `
     --hidden-import status_rules `
@@ -125,7 +130,7 @@ Write-Host "[4/7] Building the application with PyInstaller..."
     --copy-metadata pyarrow `
     --collect-all streamlit `
     --collect-data matplotlib `
-    launcher.py
+    (Join-Path $ProjectRoot "launcher.py")
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller build failed. The existing packaged application was not changed."
 }
@@ -179,12 +184,25 @@ if (Test-Path -LiteralPath $BackupDatabasePath -PathType Leaf) {
 New-Item -ItemType Directory -Path $ReleaseParentPath -Force | Out-Null
 Remove-PathIfPresent -Path $PreviousReleasePath
 $PreviousReleaseWasMoved = $false
+$ReleaseWasSyncedInPlace = $false
 try {
     if (Test-Path -LiteralPath $ReleasePath) {
-        Move-Item -LiteralPath $ReleasePath -Destination $PreviousReleasePath
-        $PreviousReleaseWasMoved = $true
+        try {
+            Move-Item -LiteralPath $ReleasePath -Destination $PreviousReleasePath -ErrorAction Stop
+            $PreviousReleaseWasMoved = $true
+        }
+        catch {
+            Write-Warning "The release directory is locked. Synchronizing the verified release in place."
+            & robocopy.exe $StagedReleasePath $ReleasePath /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
+            if ($LASTEXITCODE -gt 7) {
+                throw "Could not synchronize the verified release. Robocopy exit code: $LASTEXITCODE"
+            }
+            $ReleaseWasSyncedInPlace = $true
+        }
     }
-    Move-Item -LiteralPath $StagedReleasePath -Destination $ReleasePath
+    if (-not $ReleaseWasSyncedInPlace) {
+        Move-Item -LiteralPath $StagedReleasePath -Destination $ReleasePath
+    }
 }
 catch {
     if ($PreviousReleaseWasMoved -and -not (Test-Path -LiteralPath $ReleasePath)) {

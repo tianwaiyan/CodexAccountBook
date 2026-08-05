@@ -238,6 +238,8 @@ def _clean_amount_column(df: pd.DataFrame) -> pd.DataFrame:
 
 def _normalize_trade_type(raw_type: str) -> str:
     raw_type = str(raw_type).strip() if raw_type else ""
+    if "退款" in raw_type:
+        return "退款"
     if "支出" in raw_type or raw_type == "支":
         return "支出"
     if "收入" in raw_type or raw_type == "收":
@@ -376,7 +378,7 @@ def import_manual_entry(
         "trade_type": trade_type,
         "amount": amount,
         "category": category,
-        "life_tag": life_tag if trade_type == "支出" else "",
+        "life_tag": life_tag,
         "remark": remark,
         "counterparty": counterparty,
         "payment_channel": payment_channel,
@@ -434,7 +436,7 @@ def import_historical_excel_to_db(file_path: str | Path) -> dict[str, dict[str, 
                 "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "account": account,
                 "trade_type": trade_type,
-                "amount": abs(float(amount)) if trade_type == "收入" else -abs(float(amount)),
+                "amount": abs(float(amount)) if trade_type in ("收入", "退款") else -abs(float(amount)),
                 "category": category,
                 "remark": remark,
                 "counterparty": "",
