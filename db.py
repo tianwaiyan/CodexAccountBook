@@ -53,7 +53,7 @@ OPTION_DEFAULTS: dict[str, list[tuple[str, str]]] = {
         ("公费垫付", "public_expense"),
     ],
     "income_category": [
-        ("工资收入", ""), ("生活费收入", ""), ("转账收入", ""), ("银行利息", ""),
+        ("工资收入", ""), ("奖金收入", ""), ("转账收入", ""), ("银行利息", ""),
         ("兼职收入", ""), ("其它收入", ""), ("过手转入", "pass_through_income"),
         ("垫付报销", "reimbursement"),
     ],
@@ -65,9 +65,10 @@ DEFAULT_INCOME_CATEGORY_TAGS = {
     "工资收入": "劳动收入",
     "兼职收入": "劳动收入",
     "银行利息": "财产收入",
-    "生活费收入": "转移收入",
     "其它收入": "转移收入",
 }
+
+INCOME_CATEGORY_REPLACEMENT_MIGRATION = "replace_living_fee_income_with_bonus_v1"
 
 
 def round_amount(value: object) -> float:
@@ -125,6 +126,12 @@ def init_db() -> None:
                 PRIMARY KEY(category_type, category)
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS app_migrations (
+                migration_key TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"""
+        )
         for option_type, defaults in OPTION_DEFAULTS.items():
             for sort_order, (value, system_key) in enumerate(defaults):
                 conn.execute(
@@ -142,6 +149,32 @@ def init_db() -> None:
                 """INSERT OR IGNORE INTO category_tag_mappings
                    (category_type, category, life_tag) VALUES ('income_category', ?, ?)""",
                 (category, life_tag),
+            )
+        migration = conn.execute(
+            "SELECT 1 FROM app_migrations WHERE migration_key = ?",
+            (INCOME_CATEGORY_REPLACEMENT_MIGRATION,),
+        ).fetchone()
+        if migration is None:
+            # 仅移除后续可选项与旧映射，历史流水中的旧分类值继续保留。
+            conn.execute(
+                "DELETE FROM option_items WHERE option_type = 'income_category' AND value = ?",
+                ("生活费收入",),
+            )
+            conn.execute(
+                "DELETE FROM income_category_tag_mappings WHERE category = ?",
+                ("生活费收入",),
+            )
+            conn.execute(
+                "DELETE FROM category_tag_mappings "
+                "WHERE category_type = 'income_category' AND category = ?",
+                ("生活费收入",),
+            )
+            conn.execute(
+                "INSERT INTO app_migrations (migration_key, applied_at) VALUES (?, ?)",
+                (
+                    INCOME_CATEGORY_REPLACEMENT_MIGRATION,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
             )
         # 兼容已有版本仅存于旧收入映射表中的用户设置。
         legacy_mappings = conn.execute(
@@ -484,9 +517,10 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                             row.get("life_tag", ""),
                             expense_tags,
                             income_tags,
+                            status_rules,
                         ) or default_life_tag(
                             row["trade_type"], row.get("category", ""),
-                            income_category_tags, expense_category_tags,
+                            income_category_tags, expense_category_tags, status_rules,
                         ),
                     ),
                 )
@@ -496,6 +530,62 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
                 pass
 
     return inserted, total - inserted
+
+
+def create_transaction(
+    *,
+    trade_time: str,
+    account: str,
+    trade_type: str,
+    amount: float,
+    category: str = "",
+    life_tag: str = "",
+    reimbursement_status: str = "",
+    remark: str = "",
+    counterparty: str = "",
+    payment_channel: str = "",
+) -> bool:
+    """创建一条流水并生成新的去重标识。"""
+    inserted, _ = insert_transactions([{
+        "trade_time": trade_time,
+        "account": account,
+        "trade_type": trade_type,
+        "amount": amount,
+        "category": category,
+        "life_tag": life_tag,
+        "reimbursement_status": reimbursement_status,
+        "remark": remark,
+        "counterparty": counterparty,
+        "payment_channel": payment_channel,
+        "import_hash": f"manual-copy:{uuid.uuid4()}",
+    }])
+    return inserted == 1
+
+
+def copy_transaction(transaction_id: str) -> bool:
+    """复制一条已有流水，副本使用新的记录 ID 和去重标识。"""
+    with get_connection() as conn:
+        source = conn.execute(
+            """SELECT trade_time, account, trade_type, amount, category, remark,
+                      counterparty, payment_channel, reimbursement_status, life_tag
+               FROM transactions WHERE id = ?""",
+            (transaction_id,),
+        ).fetchone()
+        if source is None:
+            return False
+        cursor = conn.execute(
+            """INSERT INTO transactions
+               (id, trade_time, account, trade_type, amount, category, remark,
+                counterparty, payment_channel, import_hash, reimbursement_status, life_tag)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()), source["trade_time"], source["account"],
+                source["trade_type"], round_amount(source["amount"]), source["category"],
+                source["remark"], source["counterparty"], source["payment_channel"],
+                f"manual-copy:{uuid.uuid4()}", source["reimbursement_status"], source["life_tag"],
+            ),
+        )
+        return cursor.rowcount > 0
 
 
 def delete_transaction(transaction_id: str) -> bool:
@@ -567,6 +657,7 @@ def update_transaction(
     income_tags = get_option_values("income_tag")
     income_category_tags = get_income_category_tag_mappings()
     expense_category_tags = get_expense_category_tag_mappings()
+    status_rules = get_status_rules()
     with get_connection() as conn:
         if {"trade_type", "category", "life_tag"} & fields.keys():
             current = conn.execute(
@@ -584,11 +675,12 @@ def update_transaction(
                     str(fields["life_tag"]),
                     expense_tags,
                     income_tags,
+                    status_rules,
                 )
             elif "category" in fields or "trade_type" in fields:
                 automatic_tag = default_life_tag(
                     effective_trade_type, effective_category,
-                    income_category_tags, expense_category_tags,
+                    income_category_tags, expense_category_tags, status_rules,
                 )
                 if automatic_tag:
                     fields["life_tag"] = automatic_tag
@@ -599,6 +691,7 @@ def update_transaction(
                         str(current["life_tag"]),
                         expense_tags,
                         income_tags,
+                        status_rules,
                     )
 
         set_clause = ", ".join(f"{key} = ?" for key in fields)

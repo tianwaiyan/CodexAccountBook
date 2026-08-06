@@ -14,7 +14,6 @@ INCOME_CATEGORY_TAGS = {
     "工资收入": "劳动收入",
     "兼职收入": "劳动收入",
     "银行利息": "财产收入",
-    "生活费收入": "转移收入",
     "其它收入": "转移收入",
 }
 
@@ -40,6 +39,10 @@ STATUS_RULES_BY_CATEGORY: dict[str, dict[str, object]] = {
         "default": "已转出",
     },
 }
+
+
+# 这些业务分类不属于个人消费/收入标签体系，标签始终固定为空。
+LOCKED_TAG_CATEGORIES = frozenset(STATUS_RULES_BY_CATEGORY)
 
 
 def build_status_rules(
@@ -134,8 +137,12 @@ def normalise_life_tag(
     life_tag: str = "",
     expense_tags: list[str] | None = None,
     income_tags: list[str] | None = None,
+    locked_categories: object | None = None,
 ) -> str:
     """标准化标签，保留用户在有效选项中的手动选择。"""
+    categories = locked_categories if locked_categories is not None else LOCKED_TAG_CATEGORIES
+    if category in categories:
+        return ""
     return life_tag if life_tag in tag_options(trade_type, expense_tags, income_tags) else ""
 
 
@@ -144,8 +151,12 @@ def default_life_tag(
     category: str,
     income_category_tags: dict[str, str] | None = None,
     expense_category_tags: dict[str, str] | None = None,
+    locked_categories: object | None = None,
 ) -> str:
     """返回分类切换或新建流水时建议填入的默认标签。"""
+    categories = locked_categories if locked_categories is not None else LOCKED_TAG_CATEGORIES
+    if category in categories:
+        return ""
     if trade_type == "收入":
         return (income_category_tags or INCOME_CATEGORY_TAGS).get(category, "")
     if uses_expense_categories(trade_type):

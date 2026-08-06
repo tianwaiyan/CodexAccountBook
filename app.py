@@ -29,6 +29,9 @@ from local_transaction_editor import (
 )
 import parser as p
 
+
+DATETIME_24H_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 # ── 页面配置 ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="个人记账系统", page_icon="💰", layout="wide")
 
@@ -63,9 +66,6 @@ STYLE = """
     }
     [data-testid="stSidebar"] div[style*="cursor: col-resize"] {
         display: none !important;
-    }
-    .st-key-tx_filter_toggle button {
-        min-height: 68px;
     }
     [class*="st-key-tx_month_button_"] button {
         min-height: 36px;
@@ -189,6 +189,7 @@ def _reset_tx_editor() -> None:
     st.session_state["tx_edit_cancel_requested"] = False
     st.session_state["tx_edit_error"] = None
     st.session_state["tx_edit_deleted_ids"] = []
+    st.session_state["tx_edit_loaded_months"] = []
     st.session_state["tx_edit_session_id"] = None
     st.session_state["tx_edit_instance_version"] = 0
     st.session_state["tx_single_edit_id"] = None
@@ -208,6 +209,15 @@ def _tag_options_for_trade_type(trade_type: str) -> list[str]:
     return sr.tag_options(trade_type, EXPENSE_TAGS, INCOME_TAGS)
 
 
+
+def _tag_is_locked(category: str) -> bool:
+    """判断业务专属分类是否禁止修改标签。"""
+    return category in STATUS_RULES
+
+
+def _tag_options_for_category(trade_type: str, category: str) -> list[str]:
+    """返回分类实际可编辑的标签选项。"""
+    return [] if _tag_is_locked(category) else _tag_options_for_trade_type(trade_type)
 
 def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFrame | None) -> pd.DataFrame:
     """同步收支、分类与报销状态间的业务规则。"""
@@ -230,7 +240,7 @@ def _normalise_reimbursement_fields(editor_df: pd.DataFrame, baseline: pd.DataFr
             category = ""
 
         status = sr.normalise_new_status(trade_type, category, status, STATUS_RULES)
-        life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
+        life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES)
 
         normalised.at[index, "分类"] = category
         normalised.at[index, "标签"] = life_tag
@@ -245,6 +255,7 @@ def _empty_tx_column_filters() -> dict:
         "trade_types": [],
         "categories": [],
         "life_tags": [],
+        "reimbursement_statuses": [],
         "amount_min": None,
         "amount_max": None,
     }
@@ -258,6 +269,7 @@ def _normalise_tx_column_filters(filters: dict | None) -> dict:
         "trade_types": sorted(filters.get("trade_types", [])),
         "categories": sorted(filters.get("categories", [])),
         "life_tags": sorted(filters.get("life_tags", [])),
+        "reimbursement_statuses": sorted(filters.get("reimbursement_statuses", [])),
         "amount_min": filters.get("amount_min"),
         "amount_max": filters.get("amount_max"),
     }
@@ -272,6 +284,7 @@ def _set_tx_column_filters(filters: dict, *, update_draft: bool = True) -> None:
         st.session_state["tx_filter_trade_types"] = filters["trade_types"]
         st.session_state["tx_filter_categories"] = filters["categories"]
         st.session_state["tx_filter_life_tags"] = filters["life_tags"]
+        st.session_state["tx_filter_reimbursement_statuses"] = filters["reimbursement_statuses"]
         st.session_state["tx_filter_amount_min"] = (
             "" if filters["amount_min"] is None else str(filters["amount_min"])
         )
@@ -303,6 +316,8 @@ def _filter_tx_rows(rows: list[dict], filters: dict) -> list[dict]:
             continue
         if not _matches_tx_filter_value(row["life_tag"], filters["life_tags"]):
             continue
+        if not _matches_tx_filter_value(row["reimbursement_status"], filters["reimbursement_statuses"]):
+            continue
         amount = abs(float(row["amount"]))
         if filters["amount_min"] is not None and amount < filters["amount_min"]:
             continue
@@ -324,11 +339,49 @@ def _tx_filter_summary(filters: dict) -> str:
         parts.append("分类：" + "、".join(filters["categories"]))
     if filters["life_tags"]:
         parts.append("标签：" + "、".join(filters["life_tags"]))
+    if filters["reimbursement_statuses"]:
+        parts.append("报销状态：" + "、".join(filters["reimbursement_statuses"]))
     if filters["amount_min"] is not None or filters["amount_max"] is not None:
         lower = f"¥{filters['amount_min']:,.2f}" if filters["amount_min"] is not None else "不限"
         upper = f"¥{filters['amount_max']:,.2f}" if filters["amount_max"] is not None else "不限"
         parts.append(f"金额：{lower} 至 {upper}")
     return "；".join(parts) if parts else "未设置字段筛选"
+
+
+def _tx_filter_options(
+    rows: list[dict],
+    filters: dict,
+    draft: pd.DataFrame | None = None,
+) -> dict[str, list[str]]:
+    """为表头筛选弹层生成完整选项，已选值即使当前无记录也继续保留。"""
+    if draft is not None:
+        values = {
+            "accounts": set(draft["账户"].map(_text_value)),
+            "trade_types": set(draft["收支"].map(_text_value)),
+            "categories": set(draft["分类"].map(_text_value)),
+            "life_tags": set(draft["标签"].map(_text_value)),
+            "reimbursement_statuses": set(draft["报销状态"].map(_text_value)),
+        }
+    else:
+        values = {
+            "accounts": {row["account"] for row in rows},
+            "trade_types": {row["trade_type"] for row in rows},
+            "categories": {row["category"] for row in rows},
+            "life_tags": {row["life_tag"] for row in rows},
+            "reimbursement_statuses": {row["reimbursement_status"] for row in rows},
+        }
+    filters = _normalise_tx_column_filters(filters)
+    result = {}
+    for key, selected in filters.items():
+        if key in {"amount_min", "amount_max"}:
+            continue
+        result[key] = [
+            EMPTY_FILTER_OPTION,
+            *sorted({
+                _text_value(value) for value in values[key] if _text_value(value)
+            } | {value for value in selected if value}),
+        ]
+    return result
 
 
 def _rows_to_editor_df(rows: list[dict]) -> pd.DataFrame:
@@ -357,11 +410,26 @@ def _text_value(value: object) -> str:
     return "" if pd.isna(value) else str(value).strip()
 
 
+def _parse_24_hour_datetime(value: object) -> datetime:
+    """校验并解析固定的 24 小时制交易时间。"""
+    if pd.isna(value):
+        raise ValueError("交易时间须使用 24 小时制：YYYY-MM-DD HH:MM:SS")
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return pd.Timestamp(value).to_pydatetime().replace(microsecond=0)
+
+    text = _text_value(value)
+    try:
+        parsed = datetime.strptime(text, DATETIME_24H_FORMAT)
+    except ValueError as exc:
+        raise ValueError("交易时间须使用 24 小时制：YYYY-MM-DD HH:MM:SS") from exc
+    if parsed.strftime(DATETIME_24H_FORMAT) != text:
+        raise ValueError("交易时间须使用 24 小时制：YYYY-MM-DD HH:MM:SS")
+    return parsed
+
+
 def _editor_row_to_db(row: pd.Series) -> dict:
     """校验并转换一行编辑器数据为数据库字段。"""
-    parsed_time = pd.to_datetime(row["时间"], errors="coerce")
-    if pd.isna(parsed_time):
-        raise ValueError("交易时间格式无效")
+    parsed_time = _parse_24_hour_datetime(row["时间"])
 
     account = _text_value(row["账户"])
     trade_type = _text_value(row["收支"])
@@ -389,14 +457,21 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         reimbursement_status = ""
     elif reimbursement_status and reimbursement_status not in allowed_statuses:
         reimbursement_status = sr.default_status(trade_type, category, STATUS_RULES)
-    allowed_tags = _tag_options_for_trade_type(trade_type)
-    if life_tag not in ("", *allowed_tags):
-        raise ValueError(f"标签必须为空或有效的{trade_type}标签")
-    life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
+    if _tag_is_locked(category):
+        life_tag = ""
+    else:
+        allowed_tags = _tag_options_for_trade_type(trade_type)
+        if life_tag not in ("", *allowed_tags):
+            raise ValueError(f"标签必须为空或有效的{trade_type}标签")
+        life_tag = sr.normalise_life_tag(
+            trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES
+        )
+
+
 
     return {
         "id": _text_value(row["记录ID"]),
-        "trade_time": parsed_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "trade_time": parsed_time.strftime(DATETIME_24H_FORMAT),
         "account": account,
         "trade_type": trade_type,
         "amount": amount if trade_type in ("收入", "退款") else -amount,
@@ -620,6 +695,20 @@ def _request_tx_filter_change() -> None:
 
 def _request_tx_month_change(target_month: str) -> None:
     """月份按钮或年份下拉变化时，安全地切换完整 YYYY-MM 筛选值。"""
+    if st.session_state.get("tx_edit_mode", False):
+        context = {
+            "month": target_month,
+            "keyword": st.session_state.get("tx_search", ""),
+            "column_filters": _empty_tx_column_filters(),
+        }
+        st.session_state["tx_filter_error"] = None
+        st.session_state["tx_month"] = target_month
+        st.session_state["tx_year"] = target_month[:4]
+        _set_tx_column_filters(context["column_filters"])
+        st.session_state["tx_active_context"] = context
+        st.session_state["tx_edit_context"] = context
+        st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
+        return
     _request_tx_context_change({
         "month": target_month,
         "keyword": st.session_state.get("tx_search", ""),
@@ -628,8 +717,8 @@ def _request_tx_month_change(target_month: str) -> None:
     })
 
 
-def _request_tx_column_filter_apply() -> None:
-    """应用筛选表单草稿，并复用未保存修改确认流程。"""
+def _request_tx_column_filters(filters: dict) -> None:
+    """校验并应用表头筛选，复用未保存修改确认流程。"""
     def parse_amount(value: object, label: str) -> float | None:
         text = str(value or "").strip()
         if not text:
@@ -643,16 +732,17 @@ def _request_tx_column_filter_apply() -> None:
         return amount
 
     try:
-        amount_min = parse_amount(st.session_state.get("tx_filter_amount_min"), "最低金额")
-        amount_max = parse_amount(st.session_state.get("tx_filter_amount_max"), "最高金额")
+        amount_min = parse_amount(filters.get("amount_min"), "最低金额")
+        amount_max = parse_amount(filters.get("amount_max"), "最高金额")
     except ValueError as exc:
         st.session_state["tx_filter_error"] = str(exc)
         return
     target_filters = _normalise_tx_column_filters({
-        "accounts": st.session_state.get("tx_filter_accounts", []),
-        "trade_types": st.session_state.get("tx_filter_trade_types", []),
-        "categories": st.session_state.get("tx_filter_categories", []),
-        "life_tags": st.session_state.get("tx_filter_life_tags", []),
+        "accounts": filters.get("accounts", []),
+        "trade_types": filters.get("trade_types", []),
+        "categories": filters.get("categories", []),
+        "life_tags": filters.get("life_tags", []),
+        "reimbursement_statuses": filters.get("reimbursement_statuses", []),
         "amount_min": amount_min,
         "amount_max": amount_max,
     })
@@ -661,10 +751,28 @@ def _request_tx_column_filter_apply() -> None:
         st.session_state["tx_filter_error"] = "最低金额不能大于最高金额。"
         return
     st.session_state["tx_filter_error"] = None
+    current_filters = _normalise_tx_column_filters(
+        st.session_state.get("tx_column_filters", _empty_tx_column_filters())
+    )
+    if target_filters == current_filters:
+        return
     _request_tx_context_change({
         "month": st.session_state["tx_month"],
         "keyword": st.session_state.get("tx_search", ""),
         "column_filters": target_filters,
+    })
+
+
+def _request_tx_column_filter_apply() -> None:
+    """兼容旧会话状态中的筛选表单回调。"""
+    _request_tx_column_filters({
+        "accounts": st.session_state.get("tx_filter_accounts", []),
+        "trade_types": st.session_state.get("tx_filter_trade_types", []),
+        "categories": st.session_state.get("tx_filter_categories", []),
+        "life_tags": st.session_state.get("tx_filter_life_tags", []),
+        "reimbursement_statuses": st.session_state.get("tx_filter_reimbursement_statuses", []),
+        "amount_min": st.session_state.get("tx_filter_amount_min"),
+        "amount_max": st.session_state.get("tx_filter_amount_max"),
     })
 
 
@@ -747,7 +855,11 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
     with st.form("single_transaction_edit_form"):
         row1_col1, row1_col2, row1_col3 = st.columns(3)
         with row1_col1:
-            trade_time = st.datetime_input("交易时间", value=default_time)
+            trade_time_text = st.text_input(
+                "交易时间（24小时制）",
+                value=default_time.strftime(DATETIME_24H_FORMAT),
+                help="格式：YYYY-MM-DD HH:MM:SS",
+            )
         with row1_col2:
             account_options = list(dict.fromkeys([*ACCOUNTS, _text_value(row["账户"])]))
             account = st.selectbox(
@@ -770,12 +882,13 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
             current_life_tag = sr.normalise_life_tag(
                 original_trade_type, original_category,
                 _text_value(row.get("标签", "")),
-                EXPENSE_TAGS, INCOME_TAGS,
+                EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES,
             )
-            tag_options = ["", *_tag_options_for_trade_type(original_trade_type)]
+            tag_options = ["", *_tag_options_for_category(original_trade_type, original_category)]
             life_tag = st.selectbox(
                 "标签", tag_options,
                 index=tag_options.index(current_life_tag) if current_life_tag in tag_options else 0,
+                disabled=_tag_is_locked(original_category),
             )
 
         row3_col1, row3_col2, row3_col3 = st.columns(3)
@@ -804,6 +917,11 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
         st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
         st.rerun(scope="app")
     if submitted:
+        try:
+            trade_time = _parse_24_hour_datetime(trade_time_text)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
         if trade_type != original_trade_type and category not in _categories_for_trade_type(trade_type):
             category = ""
         if trade_type != original_trade_type or category != original_category:
@@ -818,15 +936,15 @@ def _render_single_edit_dialog(row: pd.Series) -> None:
                 reimbursement_status = sr.default_status(trade_type, category, STATUS_RULES)
         if trade_type != original_trade_type or category != original_category:
             life_tag = sr.default_life_tag(
-                trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS
+                trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS, STATUS_RULES
             ) or sr.normalise_life_tag(
-                trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS
+                trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES
             )
         else:
-            life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS)
+            life_tag = sr.normalise_life_tag(trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES)
         values = {
             "id": _text_value(row["记录ID"]),
-            "trade_time": trade_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "trade_time": trade_time.strftime(DATETIME_24H_FORMAT),
             "account": account,
             "trade_type": trade_type,
             "amount": amount if trade_type in ("收入", "退款") else -amount,
@@ -1159,19 +1277,26 @@ def _save_tx_bulk_edits(
     deleted_ids: list[str],
 ) -> tuple[bool, str]:
     """校验并一次保存整表编辑模式中的所有有效变更。"""
-    changed_rows = _get_tx_bulk_changes(editor_df, baseline)
     baseline_ids = {_text_value(row["记录ID"]) for _, row in baseline.iterrows()}
+    changed_rows = [
+        row for row in _get_tx_bulk_changes(editor_df, baseline)
+        if _text_value(row["记录ID"]) in baseline_ids
+    ]
+    new_rows = [
+        row for _, row in editor_df.iterrows()
+        if _text_value(row["记录ID"]) not in baseline_ids
+    ]
     deleted_ids = list(dict.fromkeys(
         transaction_id for transaction_id in deleted_ids if transaction_id in baseline_ids
     ))
-    if not changed_rows and not deleted_ids:
+    if not changed_rows and not new_rows and not deleted_ids:
         return True, "没有需要保存的修改。"
 
     baseline_by_id = {
         _text_value(row["记录ID"]): row for _, row in baseline.iterrows()
     }
     updates = []
-    for row_number, row in enumerate(changed_rows, start=1):
+    for row_number, row in enumerate([*changed_rows, *new_rows], start=1):
         try:
             _validate_tx_bulk_category(
                 row, baseline_by_id.get(_text_value(row["记录ID"]))
@@ -1181,9 +1306,10 @@ def _save_tx_bulk_edits(
             return False, f"第 {row_number} 条修改无效：{exc}"
 
     updated = 0
+    inserted = 0
     deleted = 0
     try:
-        for values in updates:
+        for values in updates[:len(changed_rows)]:
             if db.update_transaction(
                 values["id"], trade_time=values["trade_time"],
                 account=values["account"], trade_type=values["trade_type"],
@@ -1194,30 +1320,72 @@ def _save_tx_bulk_edits(
                 payment_channel=values["payment_channel"],
             ):
                 updated += 1
+        for values in updates[len(changed_rows):]:
+            if db.create_transaction(
+                trade_time=values["trade_time"], account=values["account"],
+                trade_type=values["trade_type"], amount=values["amount"],
+                category=values["category"], life_tag=values["life_tag"],
+                reimbursement_status=values["reimbursement_status"],
+                remark=values["remark"], counterparty=values["counterparty"],
+                payment_channel=values["payment_channel"],
+            ):
+                inserted += 1
         deleted = db.delete_transactions(deleted_ids)
     except Exception as exc:
         return False, f"保存失败：{exc}"
     message_parts = []
     if updated:
         message_parts.append(f"已保存 {updated} 条修改")
+    if inserted:
+        message_parts.append(f"已复制 {inserted} 条流水")
     if deleted:
         message_parts.append(f"已删除 {deleted} 条流水")
     return True, "，".join(message_parts) + "。"
 
 
 def _begin_tx_bulk_edit(database_df: pd.DataFrame, context: dict) -> None:
-    """创建当前可见流水的整表编辑快照。"""
+    """创建整表编辑会话的首个月份快照。"""
     st.session_state["tx_edit_mode"] = True
     st.session_state["tx_edit_baseline"] = database_df.copy(deep=True)
     st.session_state["merged_df"] = database_df.copy(deep=True)
     st.session_state["tx_edit_context"] = context
     st.session_state["tx_selected_ids"] = []
     st.session_state["tx_edit_deleted_ids"] = []
+    st.session_state["tx_edit_loaded_months"] = [context["month"]]
     st.session_state["tx_edit_session_id"] = str(uuid.uuid4())
     st.session_state["tx_edit_instance_version"] = 0
     st.session_state["tx_dirty"] = True
     st.session_state["tx_edit_error"] = None
     st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
+
+
+def _extend_tx_bulk_edit_month(database_df: pd.DataFrame, month: str) -> None:
+    """将首次访问月份的原始流水追加到当前编辑会话。"""
+    loaded_months = set(st.session_state.get("tx_edit_loaded_months", []))
+    if month in loaded_months:
+        return
+
+    baseline = st.session_state.get("tx_edit_baseline")
+    draft = st.session_state.get("merged_df")
+    if baseline is None or draft is None:
+        return
+
+    incoming = database_df.copy(deep=True)
+    if not incoming.empty:
+        baseline_ids = set(baseline["记录ID"].map(_text_value))
+        baseline_additions = incoming[~incoming["记录ID"].map(_text_value).isin(baseline_ids)]
+        if not baseline_additions.empty:
+            baseline = pd.concat([baseline, baseline_additions], ignore_index=True)
+
+        draft_ids = set(draft["记录ID"].map(_text_value))
+        draft_additions = incoming[~incoming["记录ID"].map(_text_value).isin(draft_ids)]
+        if not draft_additions.empty:
+            draft = pd.concat([draft, draft_additions], ignore_index=True)
+
+    loaded_months.add(month)
+    st.session_state["tx_edit_baseline"] = baseline.copy(deep=True)
+    st.session_state["merged_df"] = draft.copy(deep=True)
+    st.session_state["tx_edit_loaded_months"] = sorted(loaded_months)
 
 
 def _discard_tx_bulk_edit() -> None:
@@ -1244,7 +1412,7 @@ def _render_tx_bulk_cancel_dialog() -> None:
             st.rerun()
 
 
-def _render_tx_bulk_edit_form(database_df: pd.DataFrame) -> None:
+def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[str, list[str]]) -> None:
     """渲染本地单击编辑器；仅保存/取消操作才会回传 Streamlit。"""
     baseline = st.session_state.get("tx_edit_baseline")
     draft = st.session_state.get("merged_df")
@@ -1280,13 +1448,17 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame) -> None:
         deleted_ids=st.session_state.get("tx_edit_deleted_ids", []),
         draft_ids=[_text_value(value) for value in draft["记录ID"]],
         draft_session_id=st.session_state.get("tx_edit_session_id", ""),
+        visible_month=st.session_state.get("tx_month", ""),
         filters=st.session_state.get("tx_column_filters", _empty_tx_column_filters()),
+        filter_options=filter_options,
         height=600,
         key=(
             f"tx_bulk_editor_{st.session_state.get('tx_edit_session_id', '')}_"
             f"{st.session_state.get('tx_edit_instance_version', 0)}"
         ),
     )
+    if isinstance(result, dict) and result.get("action") == "filters":
+        _request_tx_column_filters(result.get("filters", {}))
     if not isinstance(result, dict) or result.get("action") not in {"save", "cancel"}:
         return
 
@@ -1348,47 +1520,59 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
     query_month = None if keyword else selected_month
     base_rows, total = db.query_transactions(query_month, page_size=None, keyword=keyword)
     rows = _filter_tx_rows(base_rows, applied_filters)
+    month_scope_rows = base_rows
+    if keyword:
+        # 关键词搜索继续用于只读结果；整表编辑的基线始终包含所选月份的全部流水。
+        month_scope_rows, _ = db.query_transactions(selected_month, page_size=None)
+    database_scope_df = _rows_to_editor_df(month_scope_rows) if month_scope_rows else None
     database_df = _rows_to_editor_df(rows) if rows else None
     if is_editing:
+        if database_scope_df is not None:
+            _extend_tx_bulk_edit_month(database_scope_df, selected_month)
         draft_all = st.session_state.get("merged_df")
         # 编辑期间由浏览器组件直接在完整草稿上筛选，避免用 Python 中的旧基线
         # 覆盖尚未回传的账户、收支、分类、金额等修改。
         database_df = draft_all.copy(deep=True) if draft_all is not None else None
-    if not is_editing and database_df is not None:
+    draft_for_options = st.session_state.get("merged_df") if is_editing else None
+    filter_options = _tx_filter_options(base_rows, applied_filters, draft_for_options)
+    if not is_editing:
         with table_slot.container():
             if keyword:
                 st.caption(f"全局搜索结果：显示 {len(rows)} / {total} 条记录")
             else:
                 st.caption(f"显示 {len(rows)} / {total} 条记录")
             view_result = transaction_viewer(
-                rows=_editor_df_to_component_rows(database_df),
+                rows=_editor_df_to_component_rows(database_df) if database_df is not None else [],
                 version=st.session_state.get("tx_editor_version", 0),
                 selection_key=f"tx_selection_{st.session_state.get('tx_editor_version', 0)}",
                 cleanup_draft_session_id=st.session_state.get("tx_draft_cleanup_session_id", ""),
+                filters=applied_filters,
+                filter_options=filter_options,
                 height=500,
                 key=f"tx_viewer_{st.session_state.get('tx_editor_version', 0)}",
             )
+            if isinstance(view_result, dict) and view_result.get("action") == "filters":
+                _request_tx_column_filters(view_result.get("filters", {}))
     elif is_editing and database_df is not None:
         with table_slot.container():
-            st.caption(f"正在编辑 {len(database_df)} 条完整草稿；字段筛选仅改变表格中的可见记录")
-            _render_tx_bulk_edit_form(database_df)
+            st.caption(f"已加载 {len(database_df)} 条跨月草稿；当前仅显示 {selected_month} 的匹配记录")
+            _render_tx_bulk_edit_form(database_df, filter_options)
     else:
         with table_slot.container():
             st.caption(f"显示 0 / {total} 条记录")
             st.info("当前筛选条件下没有记录。")
 
-    with controls_slot.container(height=320, border=False):
+    with controls_slot.container(height=180, border=False):
         month_toolbar = st.columns([0.8] + [0.35] * 12 + [3.1], gap=None)
         with month_toolbar[0]:
             st.selectbox("年份", years, key="tx_year", format_func=lambda year: f"{year}年",
-                         on_change=_request_tx_year_change, label_visibility="collapsed",
-                         disabled=is_editing)
+                         on_change=_request_tx_year_change, label_visibility="collapsed")
         for month_number, column in enumerate(month_toolbar[1:13], start=1):
             target_month = f"{selected_year}-{month_number:02d}"
             with column:
                 st.button(f"{month_number}月", key=f"tx_month_button_{selected_year}_{month_number}",
                           type="primary" if target_month == selected_month else "secondary",
-                          disabled=is_editing or target_month not in months, use_container_width=True,
+                          disabled=target_month not in months, use_container_width=True,
                           on_click=_request_tx_month_change, args=(target_month,))
         with month_toolbar[13]:
             st.text_input("搜索（备注/分类/对方）", key="tx_search",
@@ -1396,68 +1580,8 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
                           placeholder="全局搜索：AND/且、OR/或", disabled=is_editing)
 
         has_applied_filters = applied_filters != _empty_tx_column_filters()
-        draft_for_options = st.session_state.get("merged_df") if is_editing else None
-        account_values = (
-            set(draft_for_options["账户"].map(_text_value))
-            if draft_for_options is not None else
-            {row["account"] for row in base_rows if row["account"]}
-        )
-        trade_type_values = (
-            set(draft_for_options["收支"].map(_text_value))
-            if draft_for_options is not None else
-            {row["trade_type"] for row in base_rows if row["trade_type"]}
-        )
-        category_values = (
-            set(draft_for_options["分类"].map(_text_value))
-            if draft_for_options is not None else
-            {row["category"] for row in base_rows if row["category"]}
-        )
-        life_tag_values = (
-            set(draft_for_options["标签"].map(_text_value))
-            if draft_for_options is not None else
-            {row["life_tag"] for row in base_rows if row["life_tag"]}
-        )
-        account_options = [EMPTY_FILTER_OPTION, *sorted(
-            ({value for value in account_values if value and value != EMPTY_FILTER_OPTION}
-             | (set(st.session_state["tx_filter_accounts"]) - {EMPTY_FILTER_OPTION}))
-        )]
-        trade_type_options = [EMPTY_FILTER_OPTION, *sorted(
-            ({value for value in trade_type_values if value and value != EMPTY_FILTER_OPTION}
-             | (set(st.session_state["tx_filter_trade_types"]) - {EMPTY_FILTER_OPTION}))
-        )]
-        category_options = [EMPTY_FILTER_OPTION, *sorted(
-            ({value for value in category_values if value and value != EMPTY_FILTER_OPTION}
-             | (set(st.session_state["tx_filter_categories"]) - {EMPTY_FILTER_OPTION}))
-        )]
-        life_tag_options = [EMPTY_FILTER_OPTION, *sorted(
-            ({value for value in life_tag_values if value and value != EMPTY_FILTER_OPTION}
-             | (set(st.session_state["tx_filter_life_tags"]) - {EMPTY_FILTER_OPTION}))
-        )]
-        filter_columns = st.columns([2.0, 1.7, 2.0, 1.7, 1.35, 1.35, 1.0], gap="small")
-        with filter_columns[0]:
-            st.multiselect("账户", account_options, key="tx_filter_accounts",
-                           on_change=_request_tx_column_filter_apply)
-        with filter_columns[1]:
-            st.multiselect("收支", trade_type_options, key="tx_filter_trade_types",
-                           on_change=_request_tx_column_filter_apply)
-        with filter_columns[2]:
-            st.multiselect("分类", category_options, key="tx_filter_categories",
-                           on_change=_request_tx_column_filter_apply)
-        with filter_columns[3]:
-            st.multiselect("标签", life_tag_options, key="tx_filter_life_tags",
-                           on_change=_request_tx_column_filter_apply)
-        with filter_columns[4]:
-            st.text_input("最低金额", key="tx_filter_amount_min",
-                          placeholder="空白为不限", on_change=_request_tx_column_filter_apply)
-        with filter_columns[5]:
-            st.text_input("最高金额", key="tx_filter_amount_max",
-                          placeholder="空白为不限", on_change=_request_tx_column_filter_apply)
-        with filter_columns[6]:
-            st.button("取消筛选", type="secondary", on_click=_cancel_tx_filters,
-                      use_container_width=True, key="tx_filter_toggle")
-
         if is_editing:
-            st.caption("编辑期间已锁定年月和搜索；字段筛选仅改变当前可见草稿行，不会丢失未显示的编辑内容。")
+            st.caption("编辑期间可切换年月，搜索保持锁定；所有已访问月份共用草稿，字段筛选仅改变当前月份的可见行。")
         elif database_df is not None:
             action_result = transaction_actions(
                 version=st.session_state.get("tx_editor_version", 0),
@@ -1466,7 +1590,7 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
                 key=f"tx_actions_{st.session_state.get('tx_editor_version', 0)}",
             )
             if isinstance(action_result, dict) and action_result.get("action") == "edit":
-                _begin_tx_bulk_edit(database_df, context)
+                _begin_tx_bulk_edit(database_scope_df, context)
                 st.rerun(scope="app")
             if isinstance(action_result, dict) and action_result.get("action") == "single_edit":
                 selected_ids = {
@@ -1481,6 +1605,19 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
                     st.session_state["tx_single_edit_id"] = next(iter(selected_ids))
                     st.session_state["tx_single_edit_row"] = matching_rows.iloc[0].to_dict()
                     st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+                    st.rerun(scope="app")
+            if isinstance(action_result, dict) and action_result.get("action") == "copy":
+                selected_ids = {
+                    _text_value(transaction_id)
+                    for transaction_id in action_result.get("selected_ids", [])
+                }
+                visible_ids = set(database_df["记录ID"].map(_text_value))
+                if len(selected_ids) == 1 and selected_ids <= visible_ids:
+                    copied = db.copy_transaction(next(iter(selected_ids)))
+                    _reset_tx_editor()
+                    st.session_state["tx_notice"] = (
+                        "已复制 1 条流水。" if copied else "复制失败：原流水不存在。"
+                    )
                     st.rerun(scope="app")
             if isinstance(action_result, dict) and action_result.get("action") == "delete":
                 selected_ids = {
@@ -1525,6 +1662,7 @@ def page_transactions() -> None:
         _set_tx_column_filters(_empty_tx_column_filters())
     elif ("tx_filter_accounts" not in st.session_state
           or "tx_filter_life_tags" not in st.session_state
+          or "tx_filter_reimbursement_statuses" not in st.session_state
           or not isinstance(st.session_state.get("tx_filter_amount_min"), str)
           or not isinstance(st.session_state.get("tx_filter_amount_max"), str)):
         _set_tx_column_filters(st.session_state["tx_column_filters"])
@@ -1655,10 +1793,10 @@ def page_manual() -> None:
     with category_col:
         category = st.selectbox("分类", category_options, key="manual_category")
 
-    tag_options = _tag_options_for_trade_type(trade_type)
+    tag_options = _tag_options_for_category(trade_type, category)
     category_changed = st.session_state.get("manual_tag_category") != (trade_type, category)
     automatic_tag = sr.default_life_tag(
-        trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS
+        trade_type, category, INCOME_CATEGORY_TAGS, EXPENSE_CATEGORY_TAGS, STATUS_RULES
     )
     if category_changed and automatic_tag:
         st.session_state["manual_life_tag"] = automatic_tag
@@ -1677,6 +1815,7 @@ def page_manual() -> None:
             life_tag = st.selectbox(
                 "标签", ["", *tag_options],
                 key="manual_life_tag",
+                disabled=_tag_is_locked(category),
             )
             manual_status_options = sr.status_options(trade_type, category, STATUS_RULES)
             reimbursement_status = st.selectbox(
@@ -1700,7 +1839,7 @@ def page_manual() -> None:
                     amount=amount,
                     category=category,
                     life_tag=sr.normalise_life_tag(
-                        trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS
+                        trade_type, category, life_tag, EXPENSE_TAGS, INCOME_TAGS, STATUS_RULES
                     ),
                     reimbursement_status=reimbursement_status,
                     remark=remark,
@@ -1736,6 +1875,7 @@ def _render_option_manager(option_type: str, *, mapping_type: str | None = None)
         row = {"原名称": item["value"], "名称": item["value"], "删除": False}
         if mapping_type:
             row["自动关联标签"] = mappings.get(item["value"], "")
+            row["__标签锁定"] = _tag_is_locked(item["value"])
         rows.append(row)
 
     option_columns = [
@@ -1809,6 +1949,8 @@ def _render_option_manager(option_type: str, *, mapping_type: str | None = None)
                 db.rename_option_value(option_type, old_value, new_value)
             if mapping_type:
                 for _, row in renamed_or_kept.iterrows():
+                    if _tag_is_locked(str(row["原名称"])):
+                        continue
                     db.set_category_tag_mapping(
                         mapping_type,
                         str(row["名称"]).strip(),

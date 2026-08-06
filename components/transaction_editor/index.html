@@ -8,7 +8,7 @@
     :root { color-scheme: light; font-family: "Microsoft YaHei", "Noto Sans SC", sans-serif; }
     * { box-sizing: border-box; }
     body { margin: 0; color: #1f2937; background: transparent; }
-    .grid { overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .grid { overflow: visible; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
     .toolbar { display: flex; justify-content: flex-start; gap: 8px; padding: 8px 0; background: transparent; }
     .grid .toolbar { justify-content: flex-end; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }
     .confirm-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; padding: 10px; border: 1px solid #fbbf24; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 13px; }
@@ -45,7 +45,34 @@
     input, select { width: 100%; min-width: 0; height: 35px; padding: 6px 8px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
     input:focus, select:focus { background: #eff6ff; box-shadow: inset 0 0 0 2px #60a5fa; }
     input[type=number] { text-align: right; } select:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
+    .datetime-editor { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: stretch; height: 35px; }
+    .datetime-editor .datetime-text { min-width: 0; }
+    .date-picker-button { width: 30px; height: 35px; padding: 0; border: 0; border-left: 1px solid #e5e7eb; border-radius: 0; background: transparent; color: #2563eb; font-size: 15px; line-height: 1; }
+    .date-picker-button:hover:not(:disabled) { background: #eff6ff; }
+    .date-picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .batch-modal-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(15, 23, 42, .42); }
+    .batch-modal { width: min(460px, 100%); max-height: calc(100vh - 36px); overflow: auto; padding: 20px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; box-shadow: 0 18px 48px rgba(15, 23, 42, .22); color: #111827; }
+    .batch-modal h3 { margin: 0 0 16px; font-size: 18px; }
+    .batch-field { display: grid; gap: 6px; margin: 0 0 12px; }
+    .batch-field label { color: #374151; font-size: 13px; font-weight: 600; }
+    .batch-field select { height: 36px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; }
+    .batch-field select:disabled { background: #f3f4f6; color: #9ca3af; }
+    .batch-hint { margin: 0 0 14px; color: #6b7280; font-size: 12px; }
+    .batch-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
     .empty { padding: 22px; color: #6b7280; text-align: center; }
+    th.filterable .header-label { padding-right: 42px; }
+    .filter-trigger { position: absolute; top: 5px; right: 7px; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 4px; color: #64748b; background: transparent; font-size: 15px; line-height: 1; }
+    .filter-trigger:hover, .filter-trigger.active { color: #1d4ed8; background: #dbeafe; }
+    .filter-popover { position: fixed; z-index: 30; width: min(300px, calc(100vw - 24px)); max-height: min(420px, calc(100vh - 24px)); overflow: auto; padding: 12px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; box-shadow: 0 14px 32px rgba(15, 23, 42, .2); }
+    .filter-popover h4 { margin: 0 0 8px; font-size: 14px; }
+    .filter-options { display: grid; gap: 5px; max-height: 250px; overflow: auto; margin: 6px 0 10px; }
+    .filter-option { display: flex; align-items: center; gap: 7px; min-height: 28px; font-size: 13px; }
+    .filter-option input { width: 16px; height: 16px; }
+    .filter-range { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 10px; }
+    .filter-range input { height: 32px; padding: 5px 7px; border: 1px solid #cbd5e1; border-radius: 4px; }
+    .filter-error { margin: 0 0 8px; color: #b91c1c; font-size: 12px; }
+    .filter-actions { display: flex; justify-content: flex-end; gap: 7px; }
+    .filter-actions button { height: 30px; padding: 0 9px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -55,20 +82,41 @@
     const SUMMARY_LAYOUT_KEY_PREFIX = "account_book_yearly_category_grid_layout_v3_";
     const DATE_MODE_KEY = "account_book_transaction_grid_date_mode_v1";
     const BASE_COLUMNS = [
-      { key: "时间", width: 170, kind: "datetime-local" }, { key: "账户", width: 90, kind: "select" },
+      { key: "时间", width: 170, kind: "datetime-text" }, { key: "账户", width: 90, kind: "select" },
       { key: "收支", width: 85, kind: "select" }, { key: "金额", width: 95, kind: "number" },
       { key: "分类", width: 120, kind: "select" }, { key: "标签", width: 110, kind: "select" }, { key: "报销状态", width: 105, kind: "select" },
       { key: "备注", width: 170, kind: "text" }, { key: "对方", width: 120, kind: "text" },
       { key: "支付方式", width: 120, kind: "text" },
     ];
     const DRAFT_KEY_PREFIX = "account_book_transaction_editor_draft_v2";
-    const state = { version: null, rows: [], draftRows: new Map(), draftSessionId: "", args: {}, mode: "view", selected: new Set(), deletedIds: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, confirmingDelete: false, confirmingOptionSave: false, tagging: false, categorizing: false, dragKey: null };
+    const state = { version: null, rows: [], draftRows: new Map(), draftSessionId: "", args: {}, mode: "view", selected: new Set(), deletedIds: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, confirmingDelete: false, confirmingOptionSave: false, batchEditing: false, dragKey: null, openFilter: null, filterDraft: null, filterError: "" };
     const message = (type, data = {}) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
     const setValue = value => message("streamlit:setComponentValue", { value });
-    const setHeight = () => message("streamlit:setFrameHeight", { height: document.documentElement.scrollHeight });
+    const setHeight = () => {
+      const grid = document.getElementById("grid");
+      // 只回传表格自身高度，避免宿主 iframe 的既有高度被再次当作内容高度而不断留白。
+      const height = Math.max(1, Math.ceil(grid?.getBoundingClientRect().height || 0));
+      message("streamlit:setFrameHeight", { height });
+    };
     const esc = value => String(value ?? "").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
-    const dateForInput = value => String(value ?? "").replace(" ", "T").slice(0, 16);
-    const dateForStore = value => value ? `${value.replace("T", " ")}${value.length === 16 ? ":00" : ""}` : "";
+    const dateForInput = value => String(value ?? "").replace("T", " ").slice(0, 19);
+    const dateForStore = value => {
+      const text = String(value ?? "").trim().replace("T", " ");
+      return text.length === 16 ? `${text}:00` : text;
+    };
+    const calendarDateForInput = value => dateForInput(value).match(/^\d{4}-\d{2}-\d{2}/)?.[0] || "";
+    const mergeCalendarDate = (value, calendarDate) => {
+      if (!calendarDate) return dateForInput(value);
+      const time = dateForInput(value).match(/^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})$/)?.[1] || "00:00:00";
+      return `${calendarDate} ${time}`;
+    };
+    const selectDateSegment = input => {
+      const cursor = input.selectionStart ?? 0;
+      const segments = [[0, 4], [5, 7], [8, 10], [11, 13], [14, 16], [17, 19]];
+      const segment = segments.find(([start, end]) => cursor >= start && cursor < end)
+        || segments.find(([start]) => cursor < start) || segments[segments.length - 1];
+      input.setSelectionRange(segment[0], segment[1]);
+    };
     const displayTime = value => {
       const text = String(value ?? "").replace("T", " ");
       return state.dateMode === "date" ? text.slice(0, 10) : text.slice(0, 19);
@@ -130,23 +178,65 @@
     };
     const filterDraftRows = rows => {
       const filters = state.args.filters || {};
+      const visibleMonth = String(state.args.visible_month || "");
       const accounts = new Set(filters.accounts || []);
       const tradeTypes = new Set(filters.trade_types || []);
       const categories = new Set(filters.categories || []);
       const lifeTags = new Set(filters.life_tags || []);
       const matchesValue = (value, values) => !values.size || values.has(String(value || "")) || (values.has("空白") && !value);
+      const reimbursementStatuses = new Set(filters.reimbursement_statuses || []);
       const amountMin = filters.amount_min == null ? null : Number(filters.amount_min);
       const amountMax = filters.amount_max == null ? null : Number(filters.amount_max);
       return rows.filter(row => {
+        const rowMonth = String(row["时间"] || "").slice(0, 7);
+        if (visibleMonth && rowMonth !== visibleMonth) return false;
         if (!matchesValue(row["账户"], accounts)) return false;
         if (!matchesValue(row["收支"], tradeTypes)) return false;
         if (!matchesValue(row["分类"], categories)) return false;
         if (!matchesValue(row["标签"], lifeTags)) return false;
         const amount = Math.abs(Number(row["金额"]));
+        if (!matchesValue(row[BASE_COLUMNS[6].key], reimbursementStatuses)) return false;
         if (amountMin !== null && (!Number.isFinite(amount) || amount < amountMin)) return false;
         if (amountMax !== null && (!Number.isFinite(amount) || amount > amountMax)) return false;
         return true;
       });
+    };
+    const filterColumnMap = () => ({
+      [BASE_COLUMNS[1].key]: { key: "accounts", label: BASE_COLUMNS[1].key },
+      [BASE_COLUMNS[2].key]: { key: "trade_types", label: BASE_COLUMNS[2].key },
+      [BASE_COLUMNS[4].key]: { key: "categories", label: BASE_COLUMNS[4].key },
+      [BASE_COLUMNS[5].key]: { key: "life_tags", label: BASE_COLUMNS[5].key },
+      [BASE_COLUMNS[6].key]: { key: "reimbursement_statuses", label: BASE_COLUMNS[6].key },
+      [BASE_COLUMNS[3].key]: { key: "amount", label: BASE_COLUMNS[3].key },
+    });
+    const filterConfigFor = key => filterColumnMap()[key] || null;
+    const activeFilter = key => {
+      const config = filterConfigFor(key), filters = state.args.filters || {};
+      if (!config) return false;
+      if (config.key === "amount") return filters.amount_min != null || filters.amount_max != null;
+      return Array.isArray(filters[config.key]) && filters[config.key].length > 0;
+    };
+    const cloneFilters = filters => ({
+      accounts: [...(filters?.accounts || [])], trade_types: [...(filters?.trade_types || [])],
+      categories: [...(filters?.categories || [])], life_tags: [...(filters?.life_tags || [])],
+      reimbursement_statuses: [...(filters?.reimbursement_statuses || [])],
+      amount_min: filters?.amount_min ?? null, amount_max: filters?.amount_max ?? null,
+    });
+    const filterOptionValues = key => state.args.filter_options?.[key] || [];
+    const filterPopoverMarkup = () => {
+      const config = filterConfigFor(state.openFilter);
+      if (!config) return "";
+      const filters = state.filterDraft || cloneFilters(state.args.filters || {});
+      const title = esc(config.label);
+      let body = "";
+      if (config.key === "amount") {
+        body = `<div class="filter-range"><input id="filter-amount-min" type="number" step="0.01" min="0" placeholder="最低金额" value="${esc(filters.amount_min ?? "")}"><input id="filter-amount-max" type="number" step="0.01" min="0" placeholder="最高金额" value="${esc(filters.amount_max ?? "")}"></div>`;
+      } else {
+        const selected = new Set(filters[config.key] || []);
+        body = `<div class="filter-options">${filterOptionValues(config.key).map(value => `<label class="filter-option"><input type="checkbox" data-filter-option="${esc(value)}" ${selected.has(value) ? "checked" : ""}><span>${esc(value)}</span></label>`).join("")}</div>`;
+      }
+      const applyButton = config.key === "amount" ? '<button id="filter-apply" class="primary" type="button">应用筛选</button>' : "";
+      return `<div class="filter-popover" id="filter-popover" role="dialog" aria-label="筛选${title}"><h4>筛选${title}</h4>${state.filterError ? `<p class="filter-error">${esc(state.filterError)}</p>` : ""}${body}<div class="filter-actions"><button id="filter-clear-column" type="button">清除本列</button><button id="filter-clear-all" type="button">清除全部</button><button id="filter-cancel" type="button">取消</button>${applyButton}</div></div>`;
     };
     const selectedCategoryTradeType = () => {
       const types = new Set(state.rows
@@ -161,6 +251,8 @@
     const statusRuleFor = row => state.args.status_rules?.[row["分类"]] || null;
     const tagOptionsFor = row => row["收支"] === "收入"
       ? (state.args.income_tags || []) : (state.args.expense_tags || []);
+    const tagIsLocked = row => Boolean(state.args.status_rules?.[row["分类"]]);
+    const editableTagOptionsFor = row => tagIsLocked(row) ? [] : tagOptionsFor(row);
     const automaticTagFor = row => {
       if (row["收支"] === "收入") return state.args.income_category_tags?.[row["分类"]] || "";
       if (["支出", "退款"].includes(row["收支"])) return state.args.expense_category_tags?.[row["分类"]] || "";
@@ -192,7 +284,8 @@
         const automaticTag = automaticTagFor(row);
         if (automaticTag) row["标签"] = automaticTag;
       }
-      const allowedTags = tagOptionsFor(row);
+      if (tagIsLocked(row)) row["标签"] = "";
+      const allowedTags = editableTagOptionsFor(row);
       if (row["标签"] && !allowedTags.includes(row["标签"])) row["标签"] = "";
     };
     const optionsFor = (row, key) => {
@@ -204,7 +297,7 @@
         return Array.from(new Set([...categories, row["分类"] || ""]));
       }
       if (key === "报销状态") return statusRuleFor(row)?.statuses || [];
-      if (key === "标签") return tagOptionsFor(row);
+      if (key === "标签") return editableTagOptionsFor(row);
       return [];
     };
     const optionHtml = (values, value) => Array.from(new Set([...(values || []), value || ""])).map(item => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item || "请选择")}</option>`).join("");
@@ -233,16 +326,17 @@
           return `<td class="${classes}" tabindex="0" ${data}><input type="checkbox" ${data} ${value ? "checked" : ""}></td>`;
         }
         if (column.kind === "select") {
-          return `<td class="${classes}" tabindex="0" ${data}><select ${data}>${optionHtml(column.options || [], value)}</select></td>`;
+          const disabled = column.key === "自动关联标签" && row["__标签锁定"];
+          return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(column.options || [], value)}</select></td>`;
         }
         return `<td class="${classes}" tabindex="0" ${data}><input type="text" value="${esc(value)}" ${data}></td>`;
       }
       if (column.kind === "select") {
         const disabled = (column.key === "报销状态" && !optionsFor(row, "报销状态").length)
-          || (column.key === "标签" && !["支出", "退款", "收入"].includes(row["收支"]));
+          || (column.key === "标签" && (tagIsLocked(row) || !["支出", "退款", "收入"].includes(row["收支"])));
         return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(optionsFor(row, column.key), value)}</select></td>`;
       }
-      if (column.kind === "datetime-local") return `<td class="${classes}" tabindex="0" ${data}><input type="datetime-local" step="1" value="${esc(dateForInput(value))}" ${data}></td>`;
+      if (column.kind === "datetime-text") return `<td class="${classes}" tabindex="0" ${data}><div class="datetime-editor"><input class="datetime-text" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM:SS" value="${esc(dateForInput(value))}" ${data}><button type="button" class="date-picker-button" data-date-picker-trigger aria-label="选择日期" title="选择日期">&#128197;</button><input class="date-picker" type="date" tabindex="-1" aria-hidden="true" value="${esc(calendarDateForInput(value))}" ${data}></div></td>`;
       if (column.kind === "number") return `<td class="${classes}" tabindex="0" ${data}><input type="number" min="0.01" step="0.01" value="${esc(Number(value || 0).toFixed(2))}" ${data}></td>`;
       return `<td class="${classes}" tabindex="0" ${data}><input type="text" value="${esc(value)}" ${data}></td>`;
     };
@@ -256,17 +350,16 @@
       if (state.mode === "actions") { renderActions(root); return; }
       const cols = columns();
       const selectedCount = state.selected.size;
-      const categoryTradeType = selectedCategoryTradeType();
       const toolbar = state.mode === "edit"
-        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="set-life-tag" type="button" ${categoryTradeType ? "" : "disabled"}>设置标签</button><button id="set-category" type="button" ${categoryTradeType ? "" : "disabled"}>设置分类</button><button id="delete-selected-draft" class="danger" type="button" ${selectedCount ? "" : "disabled"}>删除选中行</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="batch-edit" type="button" ${selectedCount ? "" : "disabled"}>批量修改</button><button id="copy-selected-draft" type="button" ${selectedCount === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected-draft" class="danger" type="button" ${selectedCount ? "" : "disabled"}>删除选中行</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
       const optionToolbar = state.mode === "option-edit"
         ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="save-options" class="primary" type="button">保存修改</button></div>` : "";
       const summaryToolbar = "";
-      if (!state.rows.length) {
+      if (!state.rows.length && !["view", "edit"].includes(state.mode)) {
         const emptyMessage = state.mode === "yearly-summary" ? "当前年度没有支出记录。"
           : state.mode === "generic-view" ? (state.args.empty_message || "暂无数据。")
           : state.mode === "option-edit" ? "暂无可管理条目。" : "当前编辑草稿已无流水。";
-        root.innerHTML = `${toolbar}${optionToolbar}${lifeTagMarkup()}${categoryMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="empty">${emptyMessage}</div>`;
+         root.innerHTML = `${toolbar}${optionToolbar}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="empty">${emptyMessage}</div>`;
         bindEvents(root); setHeight(); return;
       }
       const selectable = state.mode === "view" || state.mode === "edit";
@@ -276,9 +369,11 @@
         const firstClass = state.mode === "yearly-summary" && col.key === summaryFirstKey() ? " summary-first" : "";
         const draggable = state.mode !== "yearly-summary" || col.key !== summaryFirstKey();
         const resizeHandle = state.mode === "yearly-summary" ? "" : `<span class="resize" data-resize="${col.key}"></span>`;
-        return `<th class="${firstClass}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${esc(col.label || col.key)}</span>${resizeHandle}</th>`;
+        const filterConfig = filterConfigFor(col.key);
+        const filterButton = filterConfig ? `<button type="button" class="filter-trigger ${activeFilter(col.key) ? "active" : ""}" data-filter-key="${esc(col.key)}" aria-label="筛选${esc(filterConfig.label)}" title="筛选">&#9662;</button>` : "";
+        return `<th class="${firstClass}${filterConfig ? " filterable" : ""}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${esc(col.label || col.key)}</span>${filterButton}${resizeHandle}</th>`;
       }).join("");
-      root.innerHTML = `${toolbar}${optionToolbar}${summaryToolbar}${lifeTagMarkup()}${categoryMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+       root.innerHTML = `${toolbar}${optionToolbar}${summaryToolbar}${filterPopoverMarkup()}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
       bindEvents(root);
       if (previousScroll) { const currentWrap = root.querySelector(".table-wrap"); currentWrap.scrollTop = previousScroll.top; currentWrap.scrollLeft = previousScroll.left; }
       const all = document.getElementById("select-all");
@@ -289,19 +384,36 @@
       ? '<div class="confirm-box">确定要恢复默认列布局吗？当前列宽和列顺序将被清除。<button id="confirm-reset" type="button">确认恢复</button><button id="cancel-reset" type="button">取消</button></div>' : "";
     const optionSaveMarkup = () => state.confirmingOptionSave
       ? '<div class="confirm-box">已标记的条目会从后续可选项中移除，历史账目不会删除。确定保存吗？<button id="confirm-save-options" class="danger" type="button">确认保存</button><button id="cancel-save-options" type="button">取消</button></div>' : "";
-    const lifeTagMarkup = () => {
-      const tradeType = selectedCategoryTradeType();
-      if (!state.tagging || !tradeType) return "";
-      const tags = tradeType === "收入" ? (state.args.income_tags || []) : (state.args.expense_tags || []);
-      return `<div class="confirm-box">将为已勾选的${tradeType}设置标签。<select id="life-tag-value">${optionHtml(tags, "")}</select><button id="confirm-life-tag" type="button">确认设置</button><button id="cancel-life-tag" type="button">取消</button></div>`;
+    const selectedRows = () => state.rows.filter(row => state.selected.has(String(row["记录ID"])));
+    const commonOptions = (rows, resolver) => {
+      if (!rows.length) return [];
+      const first = Array.from(new Set(resolver(rows[0]) || []));
+      return first.filter(value => rows.every(row => (resolver(row) || []).includes(value)));
     };
-    const categoryMarkup = () => {
-      const tradeType = selectedCategoryTradeType();
-      if (!state.categorizing || !tradeType) return "";
-      const options = values => Array.from(new Set(values || []))
-        .map(item => `<option value="${esc(item)}">${esc(item)}</option>`).join("");
-      const categories = tradeType === "收入" ? state.args.income_categories : state.args.expense_categories;
-      return `<div class="confirm-box">将为已勾选的${tradeType}设置分类。<select id="category-value"><option value="" selected disabled>请选择分类</option>${options(categories)}<option value="__clear__">清空分类</option></select><button id="confirm-category" type="button">确认设置</button><button id="cancel-category" type="button">取消</button></div>`;
+    const batchOptionHtml = (values, value, clearLabel = "") => {
+      const options = [`<option value="" ${value ? "" : "selected"}>不修改</option>`];
+      Array.from(new Set(values || [])).forEach(item => options.push(`<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`));
+      if (clearLabel) options.push(`<option value="__clear__" ${value === "__clear__" ? "selected" : ""}>${clearLabel}</option>`);
+      return options.join("");
+    };
+    const batchModalMarkup = () => {
+      if (!state.batchEditing) return "";
+      const rows = selectedRows();
+      const values = state.batchValues || { tradeType: "", tag: "", category: "", reimbursementStatus: "" };
+      const tradeType = values.tradeType || selectedCategoryTradeType();
+      const tradeTypes = state.args.trade_types || [];
+      const categories = tradeType === "收入" ? (state.args.income_categories || []) : ["支出", "退款"].includes(tradeType) ? (state.args.expense_categories || []) : [];
+      const targetRows = rows.map(row => {
+        const targetTradeType = tradeType || row["收支"];
+        const allowedCategories = targetTradeType === "收入" ? (state.args.income_categories || []) : (state.args.expense_categories || []);
+        const category = values.category === "__clear__" ? "" : values.category || (allowedCategories.includes(row["分类"]) ? row["分类"] : "");
+        return { ...row, "收支": targetTradeType, "分类": category };
+      });
+      const tags = tradeType ? commonOptions(targetRows, row => editableTagOptionsFor(row)) : [];
+      const statuses = commonOptions(targetRows, row => statusRuleFor(row)?.statuses || []);
+      const dependentDisabled = !tradeType;
+      const statusDisabled = !tradeType || !statuses.length;
+      return `<div class="batch-modal-backdrop"><section class="batch-modal" role="dialog" aria-modal="true" aria-labelledby="batch-edit-title"><h3 id="batch-edit-title">批量修改</h3><p class="batch-hint">未选择的项目保持原值；修改结果先保存到浏览器草稿。</p><div class="batch-field"><label for="batch-trade-type">设置收支</label><select id="batch-trade-type">${batchOptionHtml(tradeTypes, values.tradeType)}</select></div><div class="batch-field"><label for="batch-category">设置分类</label><select id="batch-category" ${dependentDisabled ? "disabled" : ""}>${batchOptionHtml(categories, values.category, "清空分类")}</select></div><div class="batch-field"><label for="batch-tag">设置标签</label><select id="batch-tag" ${dependentDisabled ? "disabled" : ""}>${batchOptionHtml(tags, values.tag, "清空标签")}</select></div><div class="batch-field"><label for="batch-reimbursement-status">设置报销状态</label><select id="batch-reimbursement-status" ${statusDisabled ? "disabled" : ""}>${batchOptionHtml(statuses, values.reimbursementStatus)}</select></div><div class="batch-modal-actions"><button id="cancel-batch-edit" type="button">取消</button><button id="confirm-batch-edit" class="primary" type="button">确认修改</button></div></section></div>`;
     };
     const deleteDraftMarkup = () => state.confirmingDelete
       ? '<div class="confirm-box">确定从编辑草稿中移除已勾选的流水吗？只有点击“保存修改”后才会删除数据库记录。<button id="confirm-delete-draft" class="danger" type="button">确认移除</button><button id="cancel-delete-draft" type="button">取消</button></div>' : "";
@@ -314,7 +426,7 @@
     const renderActions = root => {
       state.selected = readSelection();
       root.className = "";
-      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="edit-selected" class="primary" type="button" ${state.selected.size === 1 ? "" : "disabled"}>修改选中行</button><button id="begin-edit" type="button">修改流水</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
+      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="edit-selected" class="primary" type="button" ${state.selected.size === 1 ? "" : "disabled"}>修改选中行</button><button id="begin-edit" type="button">修改流水</button><button id="copy-selected" type="button" ${state.selected.size === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
       document.getElementById("reset-layout")?.addEventListener("click", requestReset);
       document.getElementById("toggle-date")?.addEventListener("click", () => { state.dateMode = state.dateMode === "datetime" ? "date" : "datetime"; saveDateMode(); renderActions(root); });
       document.getElementById("edit-selected")?.addEventListener("click", () => {
@@ -323,6 +435,13 @@
         else renderActions(root);
       });
       document.getElementById("begin-edit")?.addEventListener("click", () => setValue({ action: "edit" }));
+      document.getElementById("copy-selected")?.addEventListener("click", event => {
+        const selectedIds = [...readSelection()];
+        if (selectedIds.length !== 1) { renderActions(root); return; }
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = "正在复制…";
+        setValue({ action: "copy", selected_ids: selectedIds });
+      });
       document.getElementById("delete-selected")?.addEventListener("click", event => {
         // 操作栏与表格是独立组件实例；点击时重新读取 localStorage，避免使用同步滞后的内存选择状态。
         const selectedIds = [...readSelection()];
@@ -334,10 +453,13 @@
       bindResetConfirmation(root);
       setHeight();
     };
-    const activate = (row, col, extend = false, focus = false) => {
+    const updateActive = (row, col, extend = false) => {
       state.active = { row, col };
       if (!extend || !state.anchor) state.anchor = { row, col };
       state.range = { start: state.anchor, end: { row, col } };
+    };
+    const activate = (row, col, extend = false, focus = false) => {
+      updateActive(row, col, extend);
       render();
       if (focus) document.querySelector(`td[data-row="${row}"][data-col="${col}"]`)?.focus();
     };
@@ -379,6 +501,11 @@
         state.rows[row][key] = key === "时间" ? dateForStore(value) : value;
         normaliseRow(state.rows[row], key);
       }));
+      syncDraftRows();
+      state.rows = filterDraftRows(
+        [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
+      );
+      state.active = null; state.anchor = null; state.range = null;
       render();
     };
     const resizeColumn = (key, event) => {
@@ -390,6 +517,62 @@
       window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
     };
     const bindEvents = root => {
+      root.querySelectorAll(".filter-trigger").forEach(button => button.addEventListener("click", event => {
+        event.preventDefault(); event.stopPropagation();
+        const key = button.dataset.filterKey;
+        state.openFilter = state.openFilter === key ? null : key;
+        state.filterDraft = state.openFilter ? cloneFilters(state.args.filters || {}) : null;
+        state.filterError = "";
+        render();
+      }));
+      const popup = root.querySelector("#filter-popover");
+      if (popup) {
+        const trigger = [...root.querySelectorAll(".filter-trigger")].find(item => item.dataset.filterKey === state.openFilter);
+        const header = trigger?.closest("th");
+        if (header) {
+          const rect = header.getBoundingClientRect();
+          const width = Math.min(300, window.innerWidth - 24);
+          const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+          popup.style.left = `${left}px`;
+          popup.style.top = `${Math.min(window.innerHeight - 12, rect.bottom + 6)}px`;
+        }
+        const config = filterConfigFor(state.openFilter);
+        const draft = state.filterDraft || cloneFilters(state.args.filters || {});
+        const commitFilterDraft = () => {
+          const min = draft.amount_min === "" || draft.amount_min == null ? null : Number(draft.amount_min);
+          const max = draft.amount_max === "" || draft.amount_max == null ? null : Number(draft.amount_max);
+          if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0)) || (min !== null && max !== null && min > max)) {
+            state.filterError = "金额范围无效，请检查最小值和最大值"; render(); return;
+          }
+          state.args.filters = { ...draft, amount_min: min, amount_max: max };
+          state.filterDraft = cloneFilters(state.args.filters);
+          state.filterError = "";
+          setValue({ action: "filters", filters: state.args.filters });
+          render();
+        };
+        popup.querySelectorAll("[data-filter-option]").forEach(control => control.addEventListener("change", event => {
+          const value = event.target.dataset.filterOption;
+          const values = new Set(draft[config.key] || []);
+          event.target.checked ? values.add(value) : values.delete(value);
+          draft[config.key] = [...values]; state.filterDraft = draft; commitFilterDraft();
+        }));
+        popup.querySelector("#filter-amount-min")?.addEventListener("input", event => { draft.amount_min = event.target.value; state.filterDraft = draft; });
+        popup.querySelector("#filter-amount-max")?.addEventListener("input", event => { draft.amount_max = event.target.value; state.filterDraft = draft; });
+        popup.querySelector("#filter-clear-column")?.addEventListener("click", () => {
+          if (config.key === "amount") { draft.amount_min = null; draft.amount_max = null; }
+          else draft[config.key] = [];
+          state.openFilter = null; state.filterDraft = draft; commitFilterDraft();
+        });
+        popup.querySelector("#filter-clear-all")?.addEventListener("click", () => {
+          state.openFilter = null; state.filterDraft = cloneFilters({});
+          Object.assign(draft, state.filterDraft); commitFilterDraft();
+        });
+        popup.querySelector("#filter-cancel")?.addEventListener("click", () => { state.openFilter = null; state.filterDraft = null; state.filterError = ""; render(); });
+        popup.querySelector("#filter-apply")?.addEventListener("click", () => {
+          state.openFilter = null;
+          commitFilterDraft();
+        });
+      }
       root.querySelectorAll(".resize").forEach(handle => handle.addEventListener("pointerdown", event => resizeColumn(handle.dataset.resize, event)));
       root.querySelectorAll('th[data-column][draggable="true"]').forEach(header => {
         header.addEventListener("dragstart", () => { state.dragKey = header.dataset.column; header.classList.add("dragging"); });
@@ -416,48 +599,83 @@
         state.confirmingOptionSave = false;
         render();
       });
-      const draftRowsForSubmit = () => (state.args.draft_ids || [...state.draftRows.keys()])
-        .map(transactionId => state.draftRows.get(String(transactionId))).filter(Boolean);
+      const draftRowsForSubmit = () => [...state.draftRows.values()]
+        .filter(row => !state.deletedIds.has(String(row["记录ID"])));
       document.getElementById("save")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "save", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
       document.getElementById("cancel")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "cancel", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
-      document.getElementById("set-life-tag")?.addEventListener("click", () => { state.tagging = true; render(); });
-      document.getElementById("confirm-life-tag")?.addEventListener("click", () => {
-        const lifeTag = document.getElementById("life-tag-value")?.value || "";
-        const targetTradeType = selectedCategoryTradeType();
-        if (!targetTradeType) { state.tagging = false; render(); return; }
-        state.rows.forEach(row => {
-          if (!state.selected.has(String(row["记录ID"]))) return;
-          if (row["收支"] === targetTradeType) {
-            row["标签"] = lifeTag;
-            normaliseRow(row, "标签");
-          }
-        });
-        state.tagging = false;
+      document.getElementById("batch-edit")?.addEventListener("click", () => {
+        if (!state.selected.size) return;
+        state.batchEditing = true;
+        state.batchValues = { tradeType: "", tag: "", category: "", reimbursementStatus: "" };
         render();
       });
-      document.getElementById("cancel-life-tag")?.addEventListener("click", () => { state.tagging = false; render(); });
-      document.getElementById("set-category")?.addEventListener("click", () => { state.categorizing = true; render(); });
-      document.getElementById("confirm-category")?.addEventListener("click", () => {
-        const categoryValue = document.getElementById("category-value")?.value;
-        const targetTradeType = selectedCategoryTradeType();
-        if (!targetTradeType || !categoryValue) { state.categorizing = false; render(); return; }
-        state.rows.forEach(row => {
-          if (!state.selected.has(String(row["记录ID"]))) return;
-          if (row["收支"] === targetTradeType) {
-            row["分类"] = categoryValue === "__clear__" ? "" : categoryValue;
+      document.getElementById("batch-trade-type")?.addEventListener("change", event => {
+        state.batchValues = { tradeType: event.target.value, tag: "", category: "", reimbursementStatus: "" };
+        render();
+      });
+      document.getElementById("batch-category")?.addEventListener("change", event => {
+        const value = event.target.value;
+        state.batchValues.category = value;
+        if (value) {
+          state.batchValues.tag = "";
+          state.batchValues.reimbursementStatus = "";
+        }
+        render();
+      });
+      document.getElementById("batch-tag")?.addEventListener("change", event => { state.batchValues.tag = event.target.value; });
+      document.getElementById("batch-reimbursement-status")?.addEventListener("change", event => { state.batchValues.reimbursementStatus = event.target.value; });
+      document.getElementById("confirm-batch-edit")?.addEventListener("click", () => {
+        const values = state.batchValues || {};
+        selectedRows().forEach(row => {
+          if (values.tradeType) {
+            row["收支"] = values.tradeType;
+            normaliseRow(row, "收支");
+          }
+          if (values.category) {
+            row["分类"] = values.category === "__clear__" ? "" : values.category;
             normaliseRow(row, "分类");
           }
+          if (values.tag) {
+            row["标签"] = values.tag === "__clear__" ? "" : values.tag;
+            normaliseRow(row, "标签");
+          }
+          if (values.reimbursementStatus && statusRuleFor(row)?.statuses.includes(values.reimbursementStatus)) {
+            row["报销状态"] = values.reimbursementStatus;
+            normaliseRow(row, "报销状态");
+          }
         });
-        state.categorizing = false;
+        syncDraftRows();
+        state.batchEditing = false;
+        state.batchValues = null;
         render();
       });
-      document.getElementById("cancel-category")?.addEventListener("click", () => { state.categorizing = false; render(); });
+      document.getElementById("cancel-batch-edit")?.addEventListener("click", () => {
+        state.batchEditing = false;
+        state.batchValues = null;
+        render();
+      });
+      document.getElementById("copy-selected-draft")?.addEventListener("click", () => {
+        const selectedIds = [...state.selected];
+        if (selectedIds.length !== 1) { render(); return; }
+        const sourceIndex = state.rows.findIndex(row => String(row["记录ID"]) === selectedIds[0]);
+        if (sourceIndex < 0) { render(); return; }
+        const copiedId = `copy-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+        const copiedRow = JSON.parse(JSON.stringify(state.rows[sourceIndex]));
+        copiedRow["记录ID"] = copiedId;
+        copiedRow["选择"] = "";
+        state.rows.splice(sourceIndex + 1, 0, copiedRow);
+        state.draftRows.set(copiedId, copiedRow);
+        state.selected = new Set([copiedId]);
+        state.active = null; state.anchor = null; state.range = null;
+        syncDraftRows();
+        render();
+      });
       document.getElementById("delete-selected-draft")?.addEventListener("click", () => { state.confirmingDelete = true; render(); });
       document.getElementById("confirm-delete-draft")?.addEventListener("click", () => {
         state.selected.forEach(transactionId => { state.deletedIds.add(transactionId); state.draftRows.delete(transactionId); });
         state.rows = state.rows.filter(row => !state.selected.has(String(row["记录ID"])));
         state.selected = new Set(); state.active = null; state.anchor = null; state.range = null;
-        state.confirmingDelete = false; state.tagging = false; state.categorizing = false;
+        state.confirmingDelete = false; state.batchEditing = false; state.batchValues = null;
         render();
       });
       document.getElementById("cancel-delete-draft")?.addEventListener("click", () => { state.confirmingDelete = false; render(); });
@@ -467,24 +685,61 @@
         if (control.dataset.selectId) { control.checked ? state.selected.add(control.dataset.selectId) : state.selected.delete(control.dataset.selectId); if (state.mode === "view") persistSelection(); render(); return; }
         const row = Number(control.dataset.row), col = Number(control.dataset.col), field = control.dataset.field;
         if (!Number.isInteger(row) || !Number.isInteger(col) || !field) return;
+        if (control.matches("input.date-picker")) {
+          const cell = control.closest("td[data-row]");
+          const nextValue = mergeCalendarDate(state.rows[row][field], control.value);
+          const textInput = cell?.querySelector("input.datetime-text");
+          if (textInput) textInput.value = nextValue;
+          state.rows[row][field] = dateForStore(nextValue);
+          normaliseRow(state.rows[row], field);
+          updateActive(row, col);
+          syncDraftRows();
+          state.rows = filterDraftRows(
+            [...state.draftRows.values()].map(item => JSON.parse(JSON.stringify(item)))
+          );
+          state.active = null; state.anchor = null; state.range = null;
+          render();
+          return;
+        }
         if (state.mode === "option-edit") {
           state.rows[row][field] = control.type === "checkbox" ? control.checked : control.value;
           return;
         }
         state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
-        normaliseRow(state.rows[row], field); activate(row, col);
+        normaliseRow(state.rows[row], field);
+        updateActive(row, col);
+        syncDraftRows();
+        if (field === "时间") {
+          state.rows = filterDraftRows(
+            [...state.draftRows.values()].map(item => JSON.parse(JSON.stringify(item)))
+          );
+          state.active = null; state.anchor = null; state.range = null;
+        }
+        if (["时间", "收支", "分类"].includes(field)) render();
       });
       root.querySelector("tbody")?.addEventListener("input", event => {
         const control = event.target, row = Number(control.dataset.row), field = control.dataset.field;
+        if (control.matches("input.date-picker")) return;
         if (state.mode === "edit" && Number.isInteger(row) && field) { state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value; syncDraftRows(); }
       });
       root.querySelector("tbody")?.addEventListener("click", event => {
+        const pickerTrigger = event.target.closest("[data-date-picker-trigger]");
+        if (pickerTrigger) {
+          event.preventDefault();
+          const picker = pickerTrigger.closest("td[data-row]")?.querySelector("input.date-picker");
+          if (picker) {
+            if (typeof picker.showPicker === "function") picker.showPicker();
+            else picker.click();
+          }
+          return;
+        }
         const td = event.target.closest("td[data-row]"); if (!td) return;
         if (state.mode === "option-edit" && event.target.matches("input,select")) return;
         if (state.mode === "edit" && event.target.matches("input,select")) {
-          state.active = { row: Number(td.dataset.row), col: Number(td.dataset.col) };
-          if (!event.shiftKey || !state.anchor) state.anchor = state.active;
-          state.range = { start: state.anchor, end: state.active };
+          if (event.target.matches("input.datetime-text")) setTimeout(() => selectDateSegment(event.target), 0);
+          updateActive(Number(td.dataset.row), Number(td.dataset.col), event.shiftKey);
+          root.querySelector("td.focused")?.classList.remove("focused");
+          td.classList.add("focused");
           return;
         }
         activate(Number(td.dataset.row), Number(td.dataset.col), event.shiftKey);
@@ -500,7 +755,25 @@
           return;
         }
         const isControl = ["INPUT", "SELECT"].includes(event.target.tagName);
-        if (event.key === "Tab") { event.preventDefault(); moveActive(0, event.shiftKey ? -1 : 1); return; }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          if (state.mode === "edit" && event.target.matches("input.datetime-text")) {
+            const visibleMonth = String(state.args.visible_month || "");
+            const row = state.rows[Number(event.target.dataset.row)];
+            const rowMonth = String(row?.["时间"] || "").slice(0, 7);
+            if (visibleMonth && rowMonth !== visibleMonth) {
+              syncDraftRows();
+              state.rows = filterDraftRows(
+                [...state.draftRows.values()].map(item => JSON.parse(JSON.stringify(item)))
+              );
+              state.active = null; state.anchor = null; state.range = null;
+              render();
+              return;
+            }
+          }
+          moveActive(0, event.shiftKey ? -1 : 1);
+          return;
+        }
         if (!isControl && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); moveActive(event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0, event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0); }
       });
       root.addEventListener("paste", pasteAtActive);
@@ -527,10 +800,7 @@
         if (state.mode === "edit") {
           const persisted = loadDraftState(nextDraftSessionId);
           state.draftSessionId = nextDraftSessionId;
-          const knownIds = new Set((args.draft_ids || args.rows || []).map(row => String(typeof row === "object" ? row["记录ID"] : row)));
-          state.draftRows = new Map(
-            [...persisted.rows, ...inMemoryRows].filter(([transactionId]) => knownIds.has(transactionId))
-          );
+          state.draftRows = new Map([...persisted.rows, ...inMemoryRows]);
           state.deletedIds = new Set([
             ...(args.deleted_ids || []).map(String),
             ...persisted.deletedIds,
@@ -550,13 +820,15 @@
           state.draftRows = new Map(); state.draftSessionId = ""; state.deletedIds = new Set();
           state.rows = JSON.parse(JSON.stringify(args.rows || []));
         }
-        state.active = null; state.anchor = null; state.range = null; state.confirmingDelete = false; state.confirmingOptionSave = false; state.tagging = false; state.categorizing = false;
+        state.active = null; state.anchor = null; state.range = null; state.confirmingDelete = false; state.confirmingOptionSave = false; state.batchEditing = false; state.batchValues = null;
         if (args.mode === "view") persistSelection();
       } else if (state.mode === "edit") {
         // 同一个编辑组件实例在筛选重跑后继续使用内存中的完整草稿。
         state.rows = filterDraftRows(
           [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
         );
+      } else {
+        state.rows = JSON.parse(JSON.stringify(args.rows || []));
       }
       const signature = layoutSignature();
       if (state.layoutSignature !== signature) { state.layout = loadLayout(); state.layoutSignature = signature; }
