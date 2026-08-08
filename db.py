@@ -43,7 +43,7 @@ PERSONAL_STATS_EXCLUDED_CATEGORIES = (
 
 OPTION_DEFAULTS: dict[str, list[tuple[str, str]]] = {
     "account": [
-        ("支付宝", ""), ("微信", ""), ("手动录入", ""), ("现金", ""),
+        ("支付宝", ""), ("微信", ""), ("现金", ""),
         ("北京银行卡", ""), ("中国银行卡", ""), ("交通银行卡", ""), ("美团月付", ""),
     ],
     "expense_category": [
@@ -241,6 +241,168 @@ def get_option_items(option_type: str) -> list[dict]:
             (option_type,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def reorder_option_values(option_type: str, values: list[str]) -> None:
+    """按给定完整顺序持久化某类可选项的展示顺序。"""
+    ordered_values = [str(value).strip() for value in values]
+    if not ordered_values or any(not value for value in ordered_values):
+        raise ValueError("排序内容不能为空")
+    if len(ordered_values) != len(set(ordered_values)):
+        raise ValueError("排序内容不能重复")
+
+    with get_connection() as conn:
+        existing_values = [
+            str(row["value"])
+            for row in conn.execute(
+                "SELECT value FROM option_items WHERE option_type = ? ORDER BY sort_order, id",
+                (option_type,),
+            ).fetchall()
+        ]
+        if set(ordered_values) != set(existing_values):
+            raise ValueError("排序内容必须与当前可选项完全一致")
+        for sort_order, value in enumerate(ordered_values):
+            conn.execute(
+                "UPDATE option_items SET sort_order = ? WHERE option_type = ? AND value = ?",
+                (sort_order, option_type, value),
+            )
+
+
+def save_option_items(
+    option_type: str,
+    rows: list[dict[str, object]],
+    *,
+    mapping_type: str | None = None,
+    locked_categories: set[str] | None = None,
+) -> None:
+    """原子保存选项的新增、删除、重命名、标签关联和展示顺序。"""
+    if not rows:
+        raise ValueError("至少保留一个条目")
+    locked_categories = locked_categories or set()
+    normalised = [
+        {
+            "old_value": str(row.get("原名称", "") or "").strip(),
+            "value": str(row.get("名称", "") or "").strip(),
+            "deleted": bool(row.get("删除", False)),
+            "life_tag": str(row.get("自动关联标签", "") or "").strip(),
+        }
+        for row in rows
+    ]
+    retained = [row for row in normalised if not row["deleted"]]
+    values = [str(row["value"]) for row in retained]
+    if not values or any(not value for value in values):
+        raise ValueError("至少保留一个条目，且名称不能为空")
+    if len(values) != len(set(values)):
+        raise ValueError("名称不能重复")
+
+    field_by_type = {
+        "account": "account",
+        "expense_category": "category",
+        "income_category": "category",
+        "expense_tag": "life_tag",
+        "income_tag": "life_tag",
+    }
+    field = field_by_type[option_type]
+    deleted_values = {str(row["old_value"]) for row in normalised if row["deleted"] and row["old_value"]}
+    rename_targets = {
+        str(row["old_value"]): str(row["value"])
+        for row in retained
+        if row["old_value"] and row["old_value"] != row["value"]
+    }
+    retained_old_values = {
+        str(row["old_value"])
+        for row in retained
+        if row["old_value"]
+    }
+    occupied_targets = set(rename_targets.values()) & retained_old_values
+    if occupied_targets:
+        raise ValueError(f"请先使用未占用的名称：{'、'.join(sorted(occupied_targets))} 已存在")
+
+    with get_connection() as conn:
+        existing_values = {
+            str(row["value"])
+            for row in conn.execute(
+                "SELECT value FROM option_items WHERE option_type = ?", (option_type,)
+            ).fetchall()
+        }
+        referenced_values = {str(row["old_value"]) for row in normalised if row["old_value"]}
+        if existing_values - referenced_values:
+            raise ValueError("选项已变化，请刷新后重新编辑")
+        if not referenced_values <= existing_values:
+            raise ValueError("选项已变化，请刷新后重新编辑")
+
+        for value in deleted_values:
+            conn.execute("DELETE FROM option_items WHERE option_type = ? AND value = ?", (option_type, value))
+            if option_type == "income_category":
+                conn.execute("DELETE FROM income_category_tag_mappings WHERE category = ?", (value,))
+            if option_type in ("income_category", "expense_category"):
+                conn.execute(
+                    "DELETE FROM category_tag_mappings WHERE category_type = ? AND category = ?",
+                    (option_type, value),
+                )
+            elif option_type == "income_tag":
+                conn.execute("DELETE FROM income_category_tag_mappings WHERE life_tag = ?", (value,))
+                conn.execute("DELETE FROM category_tag_mappings WHERE life_tag = ?", (value,))
+            elif option_type == "expense_tag":
+                conn.execute("DELETE FROM category_tag_mappings WHERE life_tag = ?", (value,))
+
+        for old_value, new_value in rename_targets.items():
+            conn.execute(
+                "UPDATE option_items SET value = ? WHERE option_type = ? AND value = ?",
+                (new_value, option_type, old_value),
+            )
+            conn.execute(f"UPDATE transactions SET {field} = ? WHERE {field} = ?", (new_value, old_value))
+            if option_type == "income_category":
+                conn.execute("UPDATE income_category_tag_mappings SET category = ? WHERE category = ?", (new_value, old_value))
+            if option_type in ("income_category", "expense_category"):
+                conn.execute(
+                    "UPDATE category_tag_mappings SET category = ? WHERE category_type = ? AND category = ?",
+                    (new_value, option_type, old_value),
+                )
+            elif option_type == "income_tag":
+                conn.execute("UPDATE income_category_tag_mappings SET life_tag = ? WHERE life_tag = ?", (new_value, old_value))
+                conn.execute("UPDATE category_tag_mappings SET life_tag = ? WHERE life_tag = ?", (new_value, old_value))
+            elif option_type == "expense_tag":
+                conn.execute("UPDATE category_tag_mappings SET life_tag = ? WHERE life_tag = ?", (new_value, old_value))
+
+        existing_after_changes = {
+            str(row["value"])
+            for row in conn.execute(
+                "SELECT value FROM option_items WHERE option_type = ?", (option_type,)
+            ).fetchall()
+        }
+        for value in values:
+            if value not in existing_after_changes:
+                conn.execute(
+                    "INSERT INTO option_items (option_type, value, sort_order) VALUES (?, ?, ?)",
+                    (option_type, value, len(existing_after_changes)),
+                )
+                existing_after_changes.add(value)
+
+        if mapping_type:
+            for row in retained:
+                value = str(row["value"])
+                if value in locked_categories:
+                    continue
+                conn.execute(
+                    """INSERT INTO category_tag_mappings (category_type, category, life_tag)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(category_type, category) DO UPDATE SET life_tag = excluded.life_tag""",
+                    (mapping_type, value, str(row["life_tag"])),
+                )
+                if mapping_type == "income_category":
+                    conn.execute(
+                        """INSERT INTO income_category_tag_mappings (category, life_tag)
+                           VALUES (?, ?)
+                           ON CONFLICT(category) DO UPDATE SET life_tag = excluded.life_tag""",
+                        (value, str(row["life_tag"])),
+                    )
+
+        for sort_order, value in enumerate(values):
+            conn.execute(
+                "UPDATE option_items SET sort_order = ? WHERE option_type = ? AND value = ?",
+                (sort_order, option_type, value),
+            )
 
 
 def add_option_value(option_type: str, value: str) -> None:
@@ -716,6 +878,23 @@ def _parse_keyword_expression(keyword: str) -> list[list[str]]:
     ]
 
 
+def matches_keyword(
+    remark: object,
+    category: object,
+    counterparty: object,
+    keyword: str = "",
+) -> bool:
+    """按查询流水的相同 AND/OR 规则匹配一条草稿记录。"""
+    groups = _parse_keyword_expression(keyword)
+    if not groups:
+        return True
+    fields = [str(value or "").casefold() for value in (remark, category, counterparty)]
+    return any(
+        all(any(term.casefold() in field for field in fields) for term in terms)
+        for terms in groups
+    )
+
+
 def query_transactions(
     year_month: Optional[str],
     page: int = 1,
@@ -951,17 +1130,31 @@ def get_reimbursement_summary() -> dict:
 
 
 def get_reimbursement_records() -> list[dict]:
-    """返回全部公费垫付流水，用于仪表盘报销跟踪清单。"""
+    """返回待报销的公费垫付流水，用于仪表盘报销跟踪清单。"""
     public_expense_category = get_special_categories()["public_expense"]
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT trade_time, counterparty, remark, ABS(amount) AS amount,
                       reimbursement_status
             FROM transactions
-            WHERE category = ? AND amount < 0
-            ORDER BY CASE reimbursement_status WHEN '待报销' THEN 0 ELSE 1 END,
-                     trade_time DESC""",
+            WHERE category = ? AND amount < 0 AND reimbursement_status = '待报销'
+            ORDER BY trade_time DESC""",
             (public_expense_category,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_pending_pass_through_income_records() -> list[dict]:
+    """返回尚未转出的过手转入流水，用于仪表盘待转出清单。"""
+    pass_through_income_category = get_special_categories()["pass_through_income"]
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT trade_time, counterparty, remark, ABS(amount) AS amount,
+                      reimbursement_status
+               FROM transactions
+               WHERE category = ? AND amount > 0 AND reimbursement_status = '待转出'
+               ORDER BY trade_time DESC""",
+            (pass_through_income_category,),
         ).fetchall()
     return [dict(row) for row in rows]
 

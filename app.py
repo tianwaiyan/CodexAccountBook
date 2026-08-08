@@ -22,7 +22,7 @@ import status_rules as sr
 from local_transaction_editor import (
     local_table_viewer,
     option_editor,
-    transaction_actions,
+    segmented_time_input,
     transaction_editor,
     transaction_viewer,
     yearly_category_viewer,
@@ -88,6 +88,17 @@ STYLE = """
     .st-key-dashboard_period_toolbar [data-testid="stSelectbox"] {
         min-width: 0;
     }
+    /* Streamlit 会为带 key 的容器增加一层只有工具栏高度的包装层，
+       吸顶定位必须作用在该包装层，才能随主内容区域持续固定。 */
+    [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"]
+    > [data-testid="stLayoutWrapper"]:has(> .st-key-dashboard_period_toolbar) {
+        position: sticky;
+        top: 3rem;
+        z-index: 10;
+        background: var(--background-color, #ffffff);
+        padding: 0.35rem 0 0.6rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+    }
 </style>
 """
 st.markdown(STYLE, unsafe_allow_html=True)
@@ -119,6 +130,11 @@ def _format_money(value: float) -> str:
     if value >= 0:
         return f"¥{value:,.2f}"
     return f"-¥{abs(value):,.2f}"
+
+
+def _tx_global_search_active(keyword: object) -> bool:
+    """全局搜索框有有效关键词时，查询范围固定为整个数据库。"""
+    return bool(str(keyword or "").strip())
 
 
 def _format_amount_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -192,6 +208,9 @@ def _reset_tx_editor() -> None:
     st.session_state["tx_edit_loaded_months"] = []
     st.session_state["tx_edit_session_id"] = None
     st.session_state["tx_edit_instance_version"] = 0
+    st.session_state["tx_edit_view_mode"] = "month"
+    st.session_state["tx_edit_search_rows"] = None
+    st.session_state["tx_edit_search_ids"] = []
     st.session_state["tx_single_edit_id"] = None
     st.session_state["tx_single_edit_row"] = None
     st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
@@ -427,6 +446,20 @@ def _parse_24_hour_datetime(value: object) -> datetime:
     return parsed
 
 
+def _manual_trade_time(entry_date: date, value: object) -> str:
+    """将手动记账的可选时间合成为固定 24 小时制交易时间。"""
+    text = _text_value(value)
+    if not text:
+        return datetime.combine(entry_date, datetime.min.time()).strftime(DATETIME_24H_FORMAT)
+    for time_format in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed_time = datetime.strptime(text, time_format).time()
+            return datetime.combine(entry_date, parsed_time).strftime(DATETIME_24H_FORMAT)
+        except ValueError:
+            continue
+    raise ValueError("时间须使用 24 小时制：HH:MM 或 HH:MM:SS")
+
+
 def _editor_row_to_db(row: pd.Series) -> dict:
     """校验并转换一行编辑器数据为数据库字段。"""
     parsed_time = _parse_24_hour_datetime(row["时间"])
@@ -444,6 +477,9 @@ def _editor_row_to_db(row: pd.Series) -> dict:
         raise ValueError("金额必须为数字") from exc
     if not math.isfinite(amount) or amount <= 0:
         raise ValueError("金额必须大于 0")
+    amount = db.round_amount(amount)
+    if amount <= 0:
+        raise ValueError("金额保留两位小数后必须大于 0")
 
     category = _text_value(row["分类"])
     life_tag = _text_value(row.get("标签", ""))
@@ -589,6 +625,7 @@ def _apply_tx_pending_action(action: dict) -> None:
         st.session_state["tx_month"] = context["month"]
         st.session_state["tx_year"] = context["month"][:4]
         st.session_state["tx_search"] = context["keyword"]
+        st.session_state["tx_search_active"] = _tx_global_search_active(context["keyword"])
         _set_tx_column_filters(context.get("column_filters", _empty_tx_column_filters()))
         st.session_state["tx_active_context"] = None
 
@@ -641,13 +678,23 @@ def _render_unsaved_changes_dialog() -> None:
 def _request_tx_context_change(requested_context: dict) -> None:
     """安全地请求列表条件切换；脏编辑时转为确认动作。"""
     active_context = st.session_state.get("tx_active_context")
+    if active_context is not None:
+        active_context = {
+            **active_context,
+            "search_active": _tx_global_search_active(active_context.get("keyword", "")),
+        }
     requested_context["column_filters"] = _normalise_tx_column_filters(
         requested_context.get("column_filters")
+    )
+    # 搜索范围只由关键词决定，禁止出现“搜索框有内容但仅查询当前月份”的冲突状态。
+    requested_context["search_active"] = _tx_global_search_active(
+        requested_context.get("keyword", "")
     )
     if not active_context:
         st.session_state["tx_month"] = requested_context["month"]
         st.session_state["tx_year"] = requested_context["month"][:4]
         st.session_state["tx_search"] = requested_context["keyword"]
+        st.session_state["tx_search_active"] = requested_context["search_active"]
         _set_tx_column_filters(requested_context["column_filters"])
         return
 
@@ -657,13 +704,17 @@ def _request_tx_context_change(requested_context: dict) -> None:
             st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
         return
 
-    if (
-        st.session_state.get("tx_edit_mode", False)
-        and requested_context["month"] == active_context["month"]
-        and requested_context["keyword"] == active_context["keyword"]
-    ):
-        # 编辑期间允许字段筛选；筛选只改变草稿中的可见行，不切换编辑上下文。
+    if st.session_state.get("tx_edit_mode", False):
+        st.session_state["tx_month"] = requested_context["month"]
+        st.session_state["tx_year"] = requested_context["month"][:4]
+        st.session_state["tx_search"] = requested_context["keyword"]
+        st.session_state["tx_search_active"] = requested_context["search_active"]
         _set_tx_column_filters(requested_context["column_filters"])
+        st.session_state["tx_active_context"] = requested_context
+        st.session_state["tx_edit_context"] = requested_context
+        st.session_state["tx_edit_view_mode"] = "search" if requested_context["search_active"] else "month"
+        st.session_state["tx_edit_search_rows"] = None
+        st.session_state["tx_edit_search_ids"] = []
         st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
         return
 
@@ -671,6 +722,7 @@ def _request_tx_context_change(requested_context: dict) -> None:
         st.session_state["tx_month"] = active_context["month"]
         st.session_state["tx_year"] = active_context["month"][:4]
         st.session_state["tx_search"] = active_context["keyword"]
+        st.session_state["tx_search_active"] = active_context["search_active"]
         _set_tx_column_filters(active_context.get("column_filters", _empty_tx_column_filters()))
         st.session_state["tx_pending_action"] = {
             "kind": "filters", "context": requested_context,
@@ -679,6 +731,7 @@ def _request_tx_context_change(requested_context: dict) -> None:
         st.session_state["tx_month"] = requested_context["month"]
         st.session_state["tx_year"] = requested_context["month"][:4]
         st.session_state["tx_search"] = requested_context["keyword"]
+        st.session_state["tx_search_active"] = requested_context["search_active"]
         _set_tx_column_filters(requested_context["column_filters"])
         _reset_tx_editor()
         st.session_state["tx_active_context"] = None
@@ -686,9 +739,11 @@ def _request_tx_context_change(requested_context: dict) -> None:
 
 def _request_tx_filter_change() -> None:
     """关键词变化时，拦截可能丢失的未保存编辑。"""
+    st.session_state["tx_search_active"] = _tx_global_search_active(st.session_state["tx_search"])
     _request_tx_context_change({
         "month": st.session_state["tx_month"],
         "keyword": st.session_state["tx_search"],
+        "search_active": st.session_state["tx_search_active"],
         "column_filters": st.session_state.get("tx_column_filters", _empty_tx_column_filters()),
     })
 
@@ -698,26 +753,34 @@ def _request_tx_month_change(target_month: str) -> None:
     if st.session_state.get("tx_edit_mode", False):
         context = {
             "month": target_month,
-            "keyword": st.session_state.get("tx_search", ""),
+            "keyword": "",
+            "search_active": False,
             "column_filters": _empty_tx_column_filters(),
         }
         st.session_state["tx_filter_error"] = None
         st.session_state["tx_month"] = target_month
         st.session_state["tx_year"] = target_month[:4]
+        st.session_state["tx_search"] = ""
+        st.session_state["tx_search_active"] = False
         _set_tx_column_filters(context["column_filters"])
         st.session_state["tx_active_context"] = context
         st.session_state["tx_edit_context"] = context
+        st.session_state["tx_edit_view_mode"] = "month"
+        st.session_state["tx_edit_search_rows"] = None
+        st.session_state["tx_edit_search_ids"] = []
         st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
         return
     _request_tx_context_change({
         "month": target_month,
-        "keyword": st.session_state.get("tx_search", ""),
+        # 月份视图与全局搜索互斥；清空关键词可避免搜索框显示内容却仅查询当月。
+        "keyword": "",
+        "search_active": False,
         # 切换月份时，字段筛选自动清空。
         "column_filters": _empty_tx_column_filters(),
     })
 
 
-def _request_tx_column_filters(filters: dict) -> None:
+def _request_tx_column_filters(filters: dict) -> bool:
     """校验并应用表头筛选，复用未保存修改确认流程。"""
     def parse_amount(value: object, label: str) -> float | None:
         text = str(value or "").strip()
@@ -736,7 +799,7 @@ def _request_tx_column_filters(filters: dict) -> None:
         amount_max = parse_amount(filters.get("amount_max"), "最高金额")
     except ValueError as exc:
         st.session_state["tx_filter_error"] = str(exc)
-        return
+        return False
     target_filters = _normalise_tx_column_filters({
         "accounts": filters.get("accounts", []),
         "trade_types": filters.get("trade_types", []),
@@ -749,18 +812,21 @@ def _request_tx_column_filters(filters: dict) -> None:
     lower, upper = target_filters["amount_min"], target_filters["amount_max"]
     if lower is not None and upper is not None and lower > upper:
         st.session_state["tx_filter_error"] = "最低金额不能大于最高金额。"
-        return
+        return False
     st.session_state["tx_filter_error"] = None
     current_filters = _normalise_tx_column_filters(
         st.session_state.get("tx_column_filters", _empty_tx_column_filters())
     )
     if target_filters == current_filters:
-        return
+        return False
+    keyword = st.session_state.get("tx_search", "")
     _request_tx_context_change({
         "month": st.session_state["tx_month"],
-        "keyword": st.session_state.get("tx_search", ""),
+        "keyword": keyword,
+        "search_active": _tx_global_search_active(keyword),
         "column_filters": target_filters,
     })
+    return True
 
 
 def _request_tx_column_filter_apply() -> None:
@@ -779,9 +845,11 @@ def _request_tx_column_filter_apply() -> None:
 def _request_tx_column_filter_clear() -> None:
     """清除已应用及草稿中的字段筛选。"""
     st.session_state["tx_filter_error"] = None
+    keyword = st.session_state.get("tx_search", "")
     _request_tx_context_change({
         "month": st.session_state["tx_month"],
-        "keyword": st.session_state.get("tx_search", ""),
+        "keyword": keyword,
+        "search_active": _tx_global_search_active(keyword),
         "column_filters": _empty_tx_column_filters(),
     })
 
@@ -826,6 +894,11 @@ def _request_page_change(page_name: str) -> None:
             and st.session_state.get("tx_dirty", False)):
         st.session_state["tx_pending_action"] = {"kind": "page", "page": page_name}
         return
+    if (st.session_state.get("current_page") == "选项管理"
+            and page_name != "选项管理"
+            and st.session_state.get("option_dirty", False)):
+        st.session_state["option_pending_action"] = {"kind": "page", "page": page_name}
+        return
     st.session_state["current_page"] = page_name
 
 
@@ -834,6 +907,55 @@ def _dismiss_single_edit_dialog() -> None:
     st.session_state["tx_single_edit_id"] = None
     st.session_state["tx_single_edit_row"] = None
     st.session_state["tx_editor_version"] = st.session_state.get("tx_editor_version", 0) + 1
+
+
+def _refresh_tx_bulk_loaded_months() -> None:
+    """将数据库中新出现的流水合并到当前编辑草稿。"""
+    for month in st.session_state.get("tx_edit_loaded_months", []):
+        rows, _ = db.query_transactions(month, page_size=None)
+        if not rows:
+            continue
+        database_df = _rows_to_editor_df(rows)
+        baseline = st.session_state.get("tx_edit_baseline")
+        draft = st.session_state.get("merged_df")
+        if baseline is None or draft is None:
+            return
+        baseline_ids = set(baseline["记录ID"].map(_text_value))
+        new_baseline_rows = database_df[
+            ~database_df["记录ID"].map(_text_value).isin(baseline_ids)
+        ]
+        if not new_baseline_rows.empty:
+            st.session_state["tx_edit_baseline"] = pd.concat(
+                [baseline, new_baseline_rows], ignore_index=True
+            )
+        draft = st.session_state.get("merged_df")
+        draft_ids = set(draft["记录ID"].map(_text_value))
+        new_draft_rows = database_df[
+            ~database_df["记录ID"].map(_text_value).isin(draft_ids)
+        ]
+        if not new_draft_rows.empty:
+            st.session_state["merged_df"] = pd.concat(
+                [draft, new_draft_rows], ignore_index=True
+            )
+
+
+def _create_transaction_from_component(row: dict) -> tuple[bool, str]:
+    """校验本地弹窗回传的数据并创建一条流水。"""
+    editor_row = pd.Series({"记录ID": "", "选择": "", **row})
+    try:
+        _validate_tx_bulk_category(editor_row, None)
+        values = _editor_row_to_db(editor_row)
+        inserted = db.create_transaction(
+            trade_time=values["trade_time"], account=values["account"],
+            trade_type=values["trade_type"], amount=values["amount"],
+            category=values["category"], life_tag=values["life_tag"],
+            reimbursement_status=values["reimbursement_status"],
+            remark=values["remark"], counterparty=values["counterparty"],
+            payment_channel=values["payment_channel"],
+        )
+    except Exception as exc:
+        return False, f"保存失败：{exc}"
+    return (True, "记录已保存。") if inserted else (False, "保存失败，请重试。")
 
 
 @st.dialog("修改流水", width="large", on_dismiss=_dismiss_single_edit_dialog)
@@ -1021,18 +1143,30 @@ def _render_reimbursement_kpis(month: str) -> None:
 
 
 def _render_reimbursement_list() -> None:
-    """渲染全部公费垫付的报销跟踪清单。"""
-    records = db.get_reimbursement_records()
-    if not records:
-        st.info("暂无公费垫付记录。")
-        return
-    frame = pd.DataFrame(records).rename(columns={
-        "trade_time": "时间", "counterparty": "对方", "remark": "备注",
-        "amount": "金额", "reimbursement_status": "报销状态",
-    })
-    st.subheader("报销清单")
-    _render_local_table(
-        _format_amount_columns(frame), table_key="reimbursement_records", height=360
+    """渲染待报销与待转出的两类跟踪清单。"""
+    def render_records(records: list[dict], table_key: str, empty_message: str) -> None:
+        if not records:
+            st.info(empty_message)
+            return
+        frame = pd.DataFrame(records).rename(columns={
+            "trade_time": "时间", "counterparty": "对方", "remark": "备注",
+            "amount": "金额", "reimbursement_status": "状态",
+        })
+        _render_local_table(
+            _format_amount_columns(frame), table_key=table_key, height=360
+        )
+
+    st.subheader("待报销清单")
+    render_records(
+        db.get_reimbursement_records(),
+        "pending_reimbursement_records",
+        "暂无待报销记录。",
+    )
+    st.subheader("待转出清单")
+    render_records(
+        db.get_pending_pass_through_income_records(),
+        "pending_pass_through_income_records",
+        "暂无待转出的过手转入记录。",
     )
 
 
@@ -1243,12 +1377,15 @@ def _get_tx_bulk_changes(editor_df: pd.DataFrame, baseline: pd.DataFrame) -> lis
     baseline_by_id = {
         _text_value(row["记录ID"]): row for _, row in baseline.iterrows()
     }
-    return [
-        row for _, row in editor_df.iterrows()
-        if _row_signature(row) != _row_signature(
-            baseline_by_id.get(_text_value(row["记录ID"]), pd.Series(dtype=object))
-        )
-    ]
+    changed_rows = []
+    for _, row in editor_df.iterrows():
+        original = baseline_by_id.get(_text_value(row["记录ID"]))
+        # 新增或复制的草稿行由 _save_tx_bulk_edits 的 new_rows 分支处理。
+        if original is None:
+            continue
+        if _row_signature(row) != _row_signature(original):
+            changed_rows.append(row)
+    return changed_rows
 
 
 def _validate_tx_bulk_category(row: pd.Series, original: pd.Series | None) -> None:
@@ -1356,6 +1493,9 @@ def _begin_tx_bulk_edit(database_df: pd.DataFrame, context: dict) -> None:
     st.session_state["tx_edit_instance_version"] = 0
     st.session_state["tx_dirty"] = True
     st.session_state["tx_edit_error"] = None
+    st.session_state["tx_edit_view_mode"] = "search" if context.get("search_active") else "month"
+    st.session_state["tx_edit_search_rows"] = None
+    st.session_state["tx_edit_search_ids"] = []
     st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
 
 
@@ -1394,25 +1534,44 @@ def _discard_tx_bulk_edit() -> None:
     st.session_state["tx_notice"] = "已放弃未保存的修改。"
 
 
-@st.dialog("放弃修改？")
-def _render_tx_bulk_cancel_dialog() -> None:
-    """确认是否丢弃编辑模式中的草稿。"""
-    if not st.session_state.get("tx_edit_cancel_requested"):
-        return
-    st.warning("当前整表修改尚未保存，确定要放弃吗？")
-    keep_col, discard_col = st.columns(2)
-    with keep_col:
-        if st.button("继续编辑", type="primary", use_container_width=True):
-            st.session_state["tx_edit_cancel_requested"] = False
-            st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
-            st.rerun()
-    with discard_col:
-        if st.button("放弃修改", use_container_width=True):
-            _discard_tx_bulk_edit()
-            st.rerun()
+def _draft_keyword_rows(draft: pd.DataFrame, keyword: str) -> pd.DataFrame:
+    if draft is None or draft.empty or not keyword:
+        return draft.copy(deep=True) if draft is not None else pd.DataFrame()
+    mask = draft.apply(
+        lambda row: db.matches_keyword(row.get("备注", ""), row.get("分类", ""), row.get("对方", ""), keyword),
+        axis=1,
+    )
+    return draft.loc[mask].copy(deep=True)
 
 
-def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[str, list[str]]) -> None:
+def _ensure_tx_bulk_search_scope(keyword: str) -> pd.DataFrame:
+    """加载搜索命中的月份，并从累计草稿重新计算可见结果。"""
+    if not keyword:
+        st.session_state["tx_edit_search_rows"] = None
+        st.session_state["tx_edit_search_ids"] = []
+        st.session_state["tx_edit_view_mode"] = "month"
+        return pd.DataFrame()
+    search_rows, _ = db.query_transactions(None, page_size=None, keyword=keyword)
+    months = sorted({str(row.get("trade_time", ""))[:7] for row in search_rows if str(row.get("trade_time", ""))[:7]})
+    for month in months:
+        rows, _ = db.query_transactions(month, page_size=None)
+        if rows:
+            _extend_tx_bulk_edit_month(_rows_to_editor_df(rows), month)
+    draft = st.session_state.get("merged_df")
+    result = _draft_keyword_rows(draft, keyword) if draft is not None else pd.DataFrame()
+    st.session_state["tx_edit_search_rows"] = result.copy(deep=True)
+    st.session_state["tx_edit_search_ids"] = [_text_value(value) for value in result.get("记录ID", [])]
+    st.session_state["tx_edit_view_mode"] = "search"
+    return result
+
+
+def _render_tx_bulk_edit_form(
+    database_df: pd.DataFrame,
+    filter_options: dict[str, list[str]],
+    *,
+    view_mode: str = "month",
+    visible_ids: list[str] | None = None,
+) -> None:
     """渲染本地单击编辑器；仅保存/取消操作才会回传 Streamlit。"""
     baseline = st.session_state.get("tx_edit_baseline")
     draft = st.session_state.get("merged_df")
@@ -1429,7 +1588,6 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[st
     account_options = sorted(set(ACCOUNTS) | set(draft["账户"].map(_text_value)))
     version = st.session_state.get("tx_edit_version", 0)
 
-    st.info("编辑模式：单击单元格即可修改；编辑内容仅保存在本地草稿，点击“保存修改”后才会写入数据库。")
     if st.session_state.get("tx_edit_error"):
         st.error(st.session_state["tx_edit_error"])
 
@@ -1451,15 +1609,25 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[st
         visible_month=st.session_state.get("tx_month", ""),
         filters=st.session_state.get("tx_column_filters", _empty_tx_column_filters()),
         filter_options=filter_options,
-        height=600,
+        filter_reset_key=(
+            f"{view_mode}:{st.session_state.get('tx_month', '')}:"
+            f"{st.session_state.get('tx_search_active', False)}:"
+            f"{st.session_state.get('tx_search', '')}"
+        ),
+        view_mode=view_mode,
+        visible_ids=visible_ids or [],
+        search_keyword=(
+            st.session_state.get("tx_search", "")
+            if st.session_state.get("tx_search_active", False) else ""
+        ),
+        # 编辑工具栏 52px + 表头 38px + 10 行（每行 36px）。
+        height=450,
         key=(
             f"tx_bulk_editor_{st.session_state.get('tx_edit_session_id', '')}_"
             f"{st.session_state.get('tx_edit_instance_version', 0)}"
         ),
     )
-    if isinstance(result, dict) and result.get("action") == "filters":
-        _request_tx_column_filters(result.get("filters", {}))
-    if not isinstance(result, dict) or result.get("action") not in {"save", "cancel"}:
+    if not isinstance(result, dict) or result.get("action") not in {"save", "cancel", "manual_entry"}:
         return
 
     required_columns = ["记录ID", "选择", *TX_EDITOR_COLUMNS]
@@ -1468,7 +1636,7 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[st
         st.session_state["tx_edit_error"] = "编辑器返回的数据不完整，请继续编辑后再次保存。"
         st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
         st.session_state["tx_edit_instance_version"] = st.session_state.get("tx_edit_instance_version", 0) + 1
-        st.rerun(scope="app")
+        st.rerun(scope="fragment")
     edited_df = edited_df[required_columns]
     baseline_ids = set(baseline["记录ID"].map(_text_value))
     deleted_ids = list(dict.fromkeys(
@@ -1483,8 +1651,20 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[st
     st.session_state["merged_df"] = merged_draft.copy(deep=True)
     st.session_state["tx_edit_deleted_ids"] = deleted_ids
 
+    if result["action"] == "manual_entry":
+        ok, message = _create_transaction_from_component(result.get("manual_entry", {}))
+        if ok:
+            _refresh_tx_bulk_loaded_months()
+            st.session_state["tx_notice"] = message
+        else:
+            st.session_state["tx_edit_error"] = message
+        st.session_state["tx_edit_instance_version"] = (
+            st.session_state.get("tx_edit_instance_version", 0) + 1
+        )
+        st.rerun(scope="fragment")
+
     if result["action"] == "save":
-        ok, message = _save_tx_bulk_edits(edited_df, baseline, deleted_ids)
+        ok, message = _save_tx_bulk_edits(merged_draft, baseline, deleted_ids)
         if ok:
             _reset_tx_editor()
             st.session_state["tx_notice"] = message
@@ -1492,40 +1672,66 @@ def _render_tx_bulk_edit_form(database_df: pd.DataFrame, filter_options: dict[st
             st.session_state["tx_edit_error"] = message
             st.session_state["tx_edit_version"] = st.session_state.get("tx_edit_version", 0) + 1
             st.session_state["tx_edit_instance_version"] = st.session_state.get("tx_edit_instance_version", 0) + 1
-        st.rerun(scope="app")
+        st.rerun(scope="fragment")
 
     if result["action"] == "cancel":
-        st.session_state["tx_edit_cancel_requested"] = True
-        # 取消事件会作为组件值保留；切换组件 key，避免确认弹窗后的重跑重复处理该事件。
-        st.session_state["tx_edit_instance_version"] = st.session_state.get("tx_edit_instance_version", 0) + 1
-        st.rerun(scope="app")
+        _discard_tx_bulk_edit()
+        st.rerun(scope="fragment")
 
 
 @st.fragment
 def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
     """流水列表局部交互区：选择行只会重跑该片段。"""
+    # fragment 级重跑不会重新执行 page_transactions 的初始化逻辑，需在片段入口兜底会话键。
+    if not months:
+        return
+    fallback_month = months[0]
+    selected_month = st.session_state.get("tx_month")
+    if selected_month not in months:
+        selected_month = fallback_month
+        st.session_state["tx_month"] = selected_month
+    selected_year = st.session_state.get("tx_year")
+    valid_years = years or sorted({month[:4] for month in months}, reverse=True)
+    if selected_year not in valid_years:
+        selected_year = selected_month[:4]
+        st.session_state["tx_year"] = selected_year
+    st.session_state.setdefault("tx_search", "")
+    st.session_state.setdefault("tx_search_active", _tx_global_search_active(st.session_state["tx_search"]))
+    if "tx_column_filters" not in st.session_state:
+        _set_tx_column_filters(_empty_tx_column_filters())
     is_editing = st.session_state.get("tx_edit_mode", False)
     controls_slot = st.empty()
     table_slot = st.empty()
     selected_year = st.session_state["tx_year"]
     selected_month = st.session_state["tx_month"]
     keyword = st.session_state["tx_search"]
+    search_active = _tx_global_search_active(keyword)
+    st.session_state["tx_search_active"] = search_active
     applied_filters = _normalise_tx_column_filters(st.session_state["tx_column_filters"])
-    context = {"month": selected_month, "keyword": keyword, "column_filters": applied_filters}
+    context = {
+        "month": selected_month,
+        "keyword": keyword,
+        "search_active": search_active,
+        "column_filters": applied_filters,
+    }
     if st.session_state.get("tx_active_context") != context and not is_editing:
         _reset_tx_editor()
         st.session_state["tx_active_context"] = context
 
-    # 有关键词时进行全库搜索；未输入关键词时仍按当前月份显示。
-    query_month = None if keyword else selected_month
-    base_rows, total = db.query_transactions(query_month, page_size=None, keyword=keyword)
+    # 全局搜索框有关键词时固定查询整个数据库；字段筛选仅继续缩小搜索结果。
+    query_month = None if search_active else selected_month
+    query_keyword = keyword if search_active else ""
+    base_rows, total = db.query_transactions(query_month, page_size=None, keyword=query_keyword)
     rows = _filter_tx_rows(base_rows, applied_filters)
     month_scope_rows = base_rows
-    if keyword:
+    if search_active:
         # 关键词搜索继续用于只读结果；整表编辑的基线始终包含所选月份的全部流水。
         month_scope_rows, _ = db.query_transactions(selected_month, page_size=None)
     database_scope_df = _rows_to_editor_df(month_scope_rows) if month_scope_rows else None
-    database_df = _rows_to_editor_df(rows) if rows else None
+    # 表头筛选完全由本地组件处理；操作栏始终以当前月份/搜索的完整结果校验记录。
+    database_df = _rows_to_editor_df(base_rows) if base_rows else None
+    edit_view_mode = "month"
+    edit_visible_ids: list[str] = []
     if is_editing:
         if database_scope_df is not None:
             _extend_tx_bulk_edit_month(database_scope_df, selected_month)
@@ -1533,36 +1739,57 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
         # 编辑期间由浏览器组件直接在完整草稿上筛选，避免用 Python 中的旧基线
         # 覆盖尚未回传的账户、收支、分类、金额等修改。
         database_df = draft_all.copy(deep=True) if draft_all is not None else None
+        if search_active:
+            _ensure_tx_bulk_search_scope(keyword)
+            current_draft = st.session_state.get("merged_df")
+            database_df = current_draft.copy(deep=True) if current_draft is not None else None
+            edit_view_mode = "search"
+            edit_visible_ids = st.session_state.get("tx_edit_search_ids", [])
+        else:
+            st.session_state["tx_edit_view_mode"] = "month"
     draft_for_options = st.session_state.get("merged_df") if is_editing else None
     filter_options = _tx_filter_options(base_rows, applied_filters, draft_for_options)
     if not is_editing:
         with table_slot.container():
-            if keyword:
-                st.caption(f"全局搜索结果：显示 {len(rows)} / {total} 条记录")
+            if search_active:
+                st.caption(f"全局搜索结果：共 {total} 条记录")
             else:
-                st.caption(f"显示 {len(rows)} / {total} 条记录")
+                st.caption(f"共 {total} 条记录")
             view_result = transaction_viewer(
-                rows=_editor_df_to_component_rows(database_df) if database_df is not None else [],
+                rows=_editor_df_to_component_rows(_rows_to_editor_df(base_rows)) if base_rows else [],
                 version=st.session_state.get("tx_editor_version", 0),
                 selection_key=f"tx_selection_{st.session_state.get('tx_editor_version', 0)}",
+                accounts=ACCOUNTS,
+                trade_types=TRADE_TYPES,
+                expense_categories=EXPENSE_CATEGORIES,
+                income_categories=INCOME_CATEGORIES,
+                status_rules=STATUS_RULES,
+                expense_tags=EXPENSE_TAGS,
+                income_tags=INCOME_TAGS,
+                income_category_tags=INCOME_CATEGORY_TAGS,
+                expense_category_tags=EXPENSE_CATEGORY_TAGS,
                 cleanup_draft_session_id=st.session_state.get("tx_draft_cleanup_session_id", ""),
                 filters=applied_filters,
                 filter_options=filter_options,
-                height=500,
+                filter_reset_key=f"view:{selected_month}:{search_active}:{keyword}",
+                # 工具栏 52px + 表头 38px + 10 行（每行 36px）。
+                height=450,
                 key=f"tx_viewer_{st.session_state.get('tx_editor_version', 0)}",
             )
-            if isinstance(view_result, dict) and view_result.get("action") == "filters":
-                _request_tx_column_filters(view_result.get("filters", {}))
     elif is_editing and database_df is not None:
         with table_slot.container():
-            st.caption(f"已加载 {len(database_df)} 条跨月草稿；当前仅显示 {selected_month} 的匹配记录")
-            _render_tx_bulk_edit_form(database_df, filter_options)
+            _render_tx_bulk_edit_form(
+                database_df,
+                filter_options,
+                view_mode=edit_view_mode,
+                visible_ids=edit_visible_ids,
+            )
     else:
         with table_slot.container():
             st.caption(f"显示 0 / {total} 条记录")
             st.info("当前筛选条件下没有记录。")
 
-    with controls_slot.container(height=180, border=False):
+    with controls_slot.container():
         month_toolbar = st.columns([0.8] + [0.35] * 12 + [3.1], gap=None)
         with month_toolbar[0]:
             st.selectbox("年份", years, key="tx_year", format_func=lambda year: f"{year}年",
@@ -1577,21 +1804,22 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
         with month_toolbar[13]:
             st.text_input("搜索（备注/分类/对方）", key="tx_search",
                           on_change=_request_tx_filter_change, label_visibility="collapsed",
-                          placeholder="全局搜索：AND/且、OR/或", disabled=is_editing)
+                          placeholder="全局搜索：AND/且、OR/或")
 
-        has_applied_filters = applied_filters != _empty_tx_column_filters()
-        if is_editing:
-            st.caption("编辑期间可切换年月，搜索保持锁定；所有已访问月份共用草稿，字段筛选仅改变当前月份的可见行。")
-        elif database_df is not None:
-            action_result = transaction_actions(
-                version=st.session_state.get("tx_editor_version", 0),
-                selection_key=f"tx_selection_{st.session_state.get('tx_editor_version', 0)}",
-                cleanup_draft_session_id=st.session_state.get("tx_draft_cleanup_session_id", ""),
-                key=f"tx_actions_{st.session_state.get('tx_editor_version', 0)}",
-            )
+        if not is_editing and database_df is not None:
+            action_result = view_result
             if isinstance(action_result, dict) and action_result.get("action") == "edit":
                 _begin_tx_bulk_edit(database_scope_df, context)
-                st.rerun(scope="app")
+                st.rerun(scope="fragment")
+            if isinstance(action_result, dict) and action_result.get("action") == "manual_entry":
+                ok, message = _create_transaction_from_component(
+                    action_result.get("manual_entry", {})
+                )
+                st.session_state["tx_notice"] = message
+                st.session_state["tx_editor_version"] = (
+                    st.session_state.get("tx_editor_version", 0) + 1
+                )
+                st.rerun(scope="fragment")
             if isinstance(action_result, dict) and action_result.get("action") == "single_edit":
                 selected_ids = {
                     _text_value(transaction_id)
@@ -1618,7 +1846,7 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
                     st.session_state["tx_notice"] = (
                         "已复制 1 条流水。" if copied else "复制失败：原流水不存在。"
                     )
-                    st.rerun(scope="app")
+                    st.rerun(scope="fragment")
             if isinstance(action_result, dict) and action_result.get("action") == "delete":
                 selected_ids = {
                     _text_value(transaction_id)
@@ -1628,12 +1856,8 @@ def _render_transactions_fragment(months: list[str], years: list[str]) -> None:
                 deleted = db.delete_transactions(list(selected_ids & visible_ids))
                 _reset_tx_editor()
                 st.session_state["tx_notice"] = f"已删除 {deleted} 条记录。"
-                st.rerun(scope="app")
+                st.rerun(scope="fragment")
 
-        if has_applied_filters:
-            st.caption(f"当前字段筛选：{_tx_filter_summary(applied_filters)}")
-        if st.session_state.get("tx_filter_error"):
-            st.error(st.session_state["tx_filter_error"])
         if st.session_state.get("tx_notice"):
             st.success(st.session_state.pop("tx_notice"))
 
@@ -1658,6 +1882,8 @@ def page_transactions() -> None:
     st.session_state.pop("tx_filter_expanded", None)
     if "tx_search" not in st.session_state:
         st.session_state["tx_search"] = ""
+    if "tx_search_active" not in st.session_state:
+        st.session_state["tx_search_active"] = _tx_global_search_active(st.session_state["tx_search"])
     if "tx_column_filters" not in st.session_state:
         _set_tx_column_filters(_empty_tx_column_filters())
     elif ("tx_filter_accounts" not in st.session_state
@@ -1668,8 +1894,6 @@ def page_transactions() -> None:
         _set_tx_column_filters(st.session_state["tx_column_filters"])
 
     _render_transactions_fragment(months, years)
-    if st.session_state.get("tx_edit_cancel_requested"):
-        _render_tx_bulk_cancel_dialog()
     single_edit_row = st.session_state.get("tx_single_edit_row")
     if single_edit_row:
         _render_single_edit_dialog(pd.Series(single_edit_row))
@@ -1803,12 +2027,19 @@ def page_manual() -> None:
     elif st.session_state.get("manual_life_tag") not in ("", *tag_options):
         st.session_state["manual_life_tag"] = ""
     st.session_state["manual_tag_category"] = (trade_type, category)
+    st.session_state.setdefault("manual_entry_time", "00:00:00")
 
 
     with st.form("manual_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             entry_date = st.date_input("日期", value=date.today())
+            st.caption("时间（24 小时制）")
+            entry_time = segmented_time_input(
+                value=st.session_state["manual_entry_time"],
+                key="manual_entry_time_input",
+            )
+            st.session_state["manual_entry_time"] = entry_time
             amount = st.number_input("金额", min_value=0.01, value=0.01, step=0.01, format="%.2f")
         with col2:
             account = st.selectbox("账户", ACCOUNTS)
@@ -1833,7 +2064,7 @@ def page_manual() -> None:
         if submitted:
             try:
                 ok = p.import_manual_entry(
-                    trade_time=entry_date.strftime("%Y-%m-%d 00:00:00"),
+                    trade_time=_manual_trade_time(entry_date, entry_time),
                     account=account,
                     trade_type=trade_type,
                     amount=amount,
@@ -1848,6 +2079,7 @@ def page_manual() -> None:
                 )
                 if ok:
                     st.session_state["manual_tag_category"] = None
+                    st.session_state["manual_entry_time"] = "00:00:00"
                 else:
                     st.success("记录已保存！")
                     st.warning("该记录可能已存在（重复），未重复添加。")
@@ -1864,21 +2096,131 @@ OPTION_TYPE_LABELS = {
 }
 
 
+OPTION_TYPE_ORDER = [
+    "account", "expense_category", "income_category", "expense_tag", "income_tag",
+]
+
+
+def _option_draft_id(option_type: str) -> str:
+    return f"option:{option_type}"
+
+
+def _option_version_key(option_type: str) -> str:
+    return f"option_manager_version_{option_type}"
+
+
+def _clear_option_draft(option_type: str) -> None:
+    """清理当前选项类型的浏览器草稿，并在下次组件渲染时删除本地缓存。"""
+    st.session_state["option_cleanup_draft_id"] = _option_draft_id(option_type)
+    st.session_state["option_dirty"] = False
+    st.session_state["option_dirty_type"] = None
+    st.session_state["option_append_row"] = None
+    st.session_state["option_submit_token"] = ""
+    version_key = _option_version_key(option_type)
+    st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+
+
+def _complete_option_pending_action() -> None:
+    """在保存或放弃选项草稿后执行此前请求的切换。"""
+    action = st.session_state.pop("option_pending_action", None)
+    st.session_state.pop("option_save_after_switch", None)
+    if not action:
+        return
+    if action["kind"] == "type":
+        st.session_state["option_active_type"] = action["option_type"]
+    elif action["kind"] == "page":
+        st.session_state["current_page"] = action["page"]
+
+
+def _request_option_type_change(option_type: str) -> None:
+    """切换选项类型前拦截当前浏览器草稿。"""
+    if option_type == st.session_state.get("option_active_type", "account"):
+        return
+    if st.session_state.get("option_dirty", False):
+        st.session_state["option_pending_action"] = {"kind": "type", "option_type": option_type}
+        return
+    st.session_state["option_active_type"] = option_type
+
+
+def _save_option_rows(
+    option_type: str,
+    rows: list[dict],
+    *,
+    mapping_type: str | None = None,
+) -> tuple[bool, str]:
+    """校验并持久化一类选项的完整浏览器草稿。"""
+    edited = pd.DataFrame(rows)
+    required_columns = {"原名称", "名称", "删除", "__行ID"}
+    if required_columns - set(edited.columns):
+        return False, "选项表格返回的数据不完整，请重新编辑后保存。"
+    locked_categories = {
+        _text_value(row["名称"])
+        for _, row in edited.iterrows()
+        if _tag_is_locked(_text_value(row["原名称"]))
+    }
+    try:
+        db.save_option_items(
+            option_type,
+            edited.to_dict(orient="records"),
+            mapping_type=mapping_type,
+            locked_categories=locked_categories,
+        )
+    except ValueError as exc:
+        return False, str(exc)
+    except Exception as exc:
+        return False, f"保存失败：{exc}"
+    return True, f"{OPTION_TYPE_LABELS[option_type]}已保存。"
+
+
+@st.dialog("未保存的选项修改")
+def _render_option_unsaved_dialog() -> None:
+    """选项管理离开或切换前的统一草稿确认弹窗。"""
+    action = st.session_state.get("option_pending_action")
+    if not action or st.session_state.get("option_save_after_switch", False):
+        return
+    st.warning("当前选项修改尚未保存。")
+    st.caption("你可以继续编辑、放弃修改后切换，或保存后再切换。")
+    current_type = st.session_state.get("option_active_type", "account")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("继续编辑", use_container_width=True, key="option_keep_editing"):
+            st.session_state["option_pending_action"] = None
+            st.rerun()
+    with col2:
+        if st.button("放弃修改并切换", use_container_width=True, key="option_discard_switch"):
+            _clear_option_draft(current_type)
+            _complete_option_pending_action()
+            st.rerun()
+    with col3:
+        if st.button("保存后切换", type="primary", use_container_width=True, key="option_save_switch"):
+            st.session_state["option_save_after_switch"] = True
+            st.session_state["option_submit_token"] = uuid.uuid4().hex
+            st.rerun()
+
+
 def _render_option_manager(option_type: str, *, mapping_type: str | None = None) -> None:
-    """编辑一类可选项；重命名同步历史流水，删除仅移出可选列表。"""
+    """编辑一类可选项；所有修改先保存在浏览器草稿。"""
     label = OPTION_TYPE_LABELS[option_type]
+    if st.session_state.pop("option_clear_new_value_for", None) == option_type:
+        st.session_state[f"new_option_{option_type}"] = ""
     items = db.get_option_items(option_type)
     mappings = db.get_category_tag_mappings(mapping_type) if mapping_type else {}
     mapping_tags = INCOME_TAGS if mapping_type == "income_category" else EXPENSE_TAGS
     rows = []
     for item in items:
-        row = {"原名称": item["value"], "名称": item["value"], "删除": False}
+        row = {
+            "__行ID": f"db:{item['value']}",
+            "原名称": item["value"],
+            "名称": item["value"],
+            "删除": False,
+        }
         if mapping_type:
             row["自动关联标签"] = mappings.get(item["value"], "")
             row["__标签锁定"] = _tag_is_locked(item["value"])
         rows.append(row)
 
     option_columns = [
+        {"key": "顺序", "label": "顺序", "kind": "reorder", "width": 82},
         {"key": "名称", "label": "名称", "kind": "text", "width": 180},
     ]
     if mapping_type:
@@ -1892,15 +2234,25 @@ def _render_option_manager(option_type: str, *, mapping_type: str | None = None)
             }
         )
     option_columns.append({"key": "删除", "label": "删除", "kind": "checkbox", "width": 80})
-    version_key = f"option_manager_version_{option_type}"
+    version_key = _option_version_key(option_type)
+    append_row = st.session_state.get("option_append_row")
+    if not isinstance(append_row, dict) or append_row.get("__选项类型") != option_type:
+        append_row = {}
+    cleanup_draft_id = st.session_state.get("option_cleanup_draft_id", "")
     result = option_editor(
         rows=rows,
         columns=option_columns,
         version=st.session_state.get(version_key, 0),
         layout_key=f"account_book_option_manager_{option_type}_v1",
+        draft_id=_option_draft_id(option_type),
+        append_row=append_row,
+        cleanup_draft_id=cleanup_draft_id,
+        submit_token=st.session_state.get("option_submit_token", ""),
         height=min(max(180, 76 + len(rows) * 36), 480),
         key=f"option_editor_{option_type}",
     )
+    if cleanup_draft_id:
+        st.session_state["option_cleanup_draft_id"] = ""
 
     add_col, action_col = st.columns([3, 1])
     with add_col:
@@ -1909,78 +2261,72 @@ def _render_option_manager(option_type: str, *, mapping_type: str | None = None)
         st.write("")
         add_clicked = st.button("新增", key=f"add_option_{option_type}", use_container_width=True)
     if add_clicked:
-        try:
-            db.add_option_value(option_type, new_value)
-        except ValueError as exc:
-            st.error(str(exc))
+        value = new_value.strip()
+        if not value:
+            st.error(f"新增{label}不能为空。")
         else:
-            st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
+            new_row = {
+                "__行ID": f"new:{uuid.uuid4().hex}",
+                "__选项类型": option_type,
+                "原名称": "",
+                "名称": value,
+                "删除": False,
+            }
+            if mapping_type:
+                new_row["自动关联标签"] = ""
+                new_row["__标签锁定"] = False
+            st.session_state["option_append_row"] = new_row
+            st.session_state["option_dirty"] = True
+            st.session_state["option_dirty_type"] = option_type
+            st.session_state["option_clear_new_value_for"] = option_type
             st.rerun()
 
+    if isinstance(result, dict) and result.get("action") == "option_dirty":
+        st.session_state["option_dirty"] = True
+        st.session_state["option_dirty_type"] = option_type
     if isinstance(result, dict) and result.get("action") == "save":
-        edited = pd.DataFrame(result.get("rows", []))
-        required_columns = {"原名称", "名称", "删除"}
-        if required_columns - set(edited.columns):
-            st.error("选项表格返回的数据不完整，请重新编辑后保存。")
-            return
-        renamed_or_kept = edited.loc[~edited["删除"]].copy()
-        values = [str(value).strip() for value in renamed_or_kept["名称"]]
-        if not values or any(not value for value in values):
-            st.error("至少保留一个条目，且名称不能为空。")
-            return
-        if len(values) != len(set(values)):
-            st.error("名称不能重复。")
-            return
-        old_values = set(edited["原名称"].astype(str))
-        rename_targets = {
-            str(row["原名称"]): str(row["名称"]).strip()
-            for _, row in renamed_or_kept.iterrows()
-            if str(row["原名称"]) != str(row["名称"]).strip()
-        }
-        retained_old_values = old_values - set(edited.loc[edited["删除"], "原名称"].astype(str))
-        occupied_targets = set(rename_targets.values()) & retained_old_values
-        if occupied_targets:
-            st.error(f"请先使用未占用的名称：{'、'.join(sorted(occupied_targets))} 已存在。")
-            return
-        try:
-            for _, row in edited.loc[edited["删除"]].iterrows():
-                db.delete_option_value(option_type, str(row["原名称"]))
-            for old_value, new_value in rename_targets.items():
-                db.rename_option_value(option_type, old_value, new_value)
-            if mapping_type:
-                for _, row in renamed_or_kept.iterrows():
-                    if _tag_is_locked(str(row["原名称"])):
-                        continue
-                    db.set_category_tag_mapping(
-                        mapping_type,
-                        str(row["名称"]).strip(),
-                        str(row.get("自动关联标签", "") or "").strip(),
-                    )
-        except ValueError as exc:
-            st.error(str(exc))
+        ok, message = _save_option_rows(option_type, result.get("rows", []), mapping_type=mapping_type)
+        if not ok:
+            st.session_state["option_error"] = message
         else:
-            st.success(f"{label}已更新。删除的条目仍会保留在历史流水中。")
+            _clear_option_draft(option_type)
+            st.session_state["option_notice"] = message + " 删除的条目仍会保留在历史流水中。"
+            st.session_state["option_error"] = None
+            _complete_option_pending_action()
             st.session_state[version_key] = st.session_state.get(version_key, 0) + 1
             st.rerun()
 
 
 def page_option_management() -> None:
     st.caption("可维护账户、分类和标签。重命名会同步既有流水；删除仅移出后续可选项，不会删除账目。")
-    account_tab, category_tab, tag_tab = st.tabs(["账户", "分类", "标签"])
-    with account_tab:
-        _render_option_manager("account")
-    with category_tab:
-        expense_tab, income_tab = st.tabs(["支出分类（含退款）", "收入分类"])
-        with expense_tab:
-            _render_option_manager("expense_category", mapping_type="expense_category")
-        with income_tab:
-            _render_option_manager("income_category", mapping_type="income_category")
-    with tag_tab:
-        expense_tag_tab, income_tag_tab = st.tabs(["支出标签（含退款）", "收入标签"])
-        with expense_tag_tab:
-            _render_option_manager("expense_tag")
-        with income_tag_tab:
-            _render_option_manager("income_tag")
+    if st.session_state.get("option_notice"):
+        st.success(st.session_state.pop("option_notice"))
+    if "option_active_type" not in st.session_state:
+        st.session_state["option_active_type"] = "account"
+    button_labels = [
+        ("account", "账户"),
+        ("expense_category", "支出分类（含退款）"),
+        ("income_category", "收入分类"),
+        ("expense_tag", "支出标签（含退款）"),
+        ("income_tag", "收入标签"),
+    ]
+    columns = st.columns(len(button_labels))
+    for column, (option_type, button_label) in zip(columns, button_labels):
+        with column:
+            if st.button(
+                button_label,
+                key=f"option_type_{option_type}",
+                type="primary" if st.session_state["option_active_type"] == option_type else "secondary",
+                use_container_width=True,
+            ):
+                _request_option_type_change(option_type)
+    active_type = st.session_state["option_active_type"]
+    mapping_type = active_type if active_type in {"expense_category", "income_category"} else None
+    if st.session_state.get("option_error"):
+        st.error(st.session_state["option_error"])
+    _render_option_manager(active_type, mapping_type=mapping_type)
+    if st.session_state.get("option_pending_action") and not st.session_state.get("option_save_after_switch", False):
+        _render_option_unsaved_dialog()
 
 
 # ══════════════════════════════════════════════════════════════════════════

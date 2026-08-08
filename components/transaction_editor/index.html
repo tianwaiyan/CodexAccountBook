@@ -9,16 +9,17 @@
     * { box-sizing: border-box; }
     body { margin: 0; color: #1f2937; background: transparent; }
     .grid { overflow: visible; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .time-input { width: 100%; height: 36px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #1f2937; font: inherit; }
+    .time-input:focus { border-color: #60a5fa; outline: 0; box-shadow: 0 0 0 1px #60a5fa; }
     .toolbar { display: flex; justify-content: flex-start; gap: 8px; padding: 8px 0; background: transparent; }
     .grid .toolbar { justify-content: flex-end; padding: 8px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; }
-    .confirm-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 8px; padding: 10px; border: 1px solid #fbbf24; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 13px; }
-    .grid .confirm-box { margin: 8px 10px; }
     button { height: 34px; padding: 0 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; color: #374151; cursor: pointer; font: inherit; }
     button:hover:not(:disabled) { background: #f3f4f6; }
     button:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
     button.primary { color: #fff; border-color: #2563eb; background: #2563eb; }
     button.danger { color: #b91c1c; border-color: #fecaca; background: #fff1f2; }
-    .table-wrap { max-height: calc(var(--grid-height) - 52px); overflow: auto; }
+    .grid.view .table-wrap { height: calc(var(--grid-height) - 52px); overflow: auto; }
+    .grid.edit .table-wrap { height: calc(var(--grid-height) - 52px); overflow: auto; }
     table { border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: max-content; font-size: 13px; }
     th { position: sticky; top: 0; z-index: 2; height: 38px; background: #f8fafc; color: #374151; text-align: left; white-space: nowrap; font-weight: 600; user-select: none; }
     th, td { overflow: hidden; border-right: 1px solid #f1f5f9; border-bottom: 1px solid #e5e7eb; vertical-align: middle; }
@@ -45,11 +46,10 @@
     input, select { width: 100%; min-width: 0; height: 35px; padding: 6px 8px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
     input:focus, select:focus { background: #eff6ff; box-shadow: inset 0 0 0 2px #60a5fa; }
     input[type=number] { text-align: right; } select:disabled { color: #9ca3af; background: #f9fafb; cursor: not-allowed; }
-    .datetime-editor { display: grid; grid-template-columns: minmax(0, 1fr) 30px; align-items: stretch; height: 35px; }
-    .datetime-editor .datetime-text { min-width: 0; }
-    .date-picker-button { width: 30px; height: 35px; padding: 0; border: 0; border-left: 1px solid #e5e7eb; border-radius: 0; background: transparent; color: #2563eb; font-size: 15px; line-height: 1; }
-    .date-picker-button:hover:not(:disabled) { background: #eff6ff; }
-    .date-picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    .amount-input { appearance: textfield; -moz-appearance: textfield; }
+    .amount-input::-webkit-inner-spin-button, .amount-input::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
+    .reorder-controls { display: flex; justify-content: center; gap: 4px; padding: 0 5px; }
+    .reorder-controls button { width: 28px; height: 28px; padding: 0; border-radius: 4px; font-size: 13px; }
     .batch-modal-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(15, 23, 42, .42); }
     .batch-modal { width: min(460px, 100%); max-height: calc(100vh - 36px); overflow: auto; padding: 20px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; box-shadow: 0 18px 48px rgba(15, 23, 42, .22); color: #111827; }
     .batch-modal h3 { margin: 0 0 16px; font-size: 18px; }
@@ -59,6 +59,23 @@
     .batch-field select:disabled { background: #f3f4f6; color: #9ca3af; }
     .batch-hint { margin: 0 0 14px; color: #6b7280; font-size: 12px; }
     .batch-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .manual-modal-backdrop { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(15, 23, 42, .42); }
+    .manual-modal { width: min(900px, 100%); max-height: calc(100vh - 36px); overflow: auto; padding: 20px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; box-shadow: 0 18px 48px rgba(15, 23, 42, .22); color: #111827; }
+    .manual-modal h3 { margin: 0 0 16px; font-size: 18px; }
+    .manual-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 14px; }
+    .manual-field { display: grid; gap: 6px; min-width: 0; }
+    .manual-field.full { grid-column: 1 / -1; }
+    .manual-field label { color: #374151; font-size: 13px; font-weight: 600; }
+    .manual-field input, .manual-field select { height: 36px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; }
+    .manual-field input:focus, .manual-field select:focus { border-color: #60a5fa; background: #fff; box-shadow: 0 0 0 1px #60a5fa; }
+    .manual-error { margin: 12px 0 0; color: #b91c1c; font-size: 13px; }
+    .manual-modal-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
+    .manual-modal-actions button { width: 100%; }
+    @media (max-width: 720px) { .manual-form-grid { grid-template-columns: 1fr; } .manual-field.full { grid-column: auto; } }
+    .confirm-modal-backdrop { position: fixed; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(15, 23, 42, .42); }
+    .confirm-modal { width: min(420px, 100%); padding: 18px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; box-shadow: 0 18px 48px rgba(15, 23, 42, .22); color: #111827; }
+    .confirm-modal p { margin: 0; line-height: 1.55; font-size: 14px; }
+    .confirm-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
     .empty { padding: 22px; color: #6b7280; text-align: center; }
     th.filterable .header-label { padding-right: 42px; }
     .filter-trigger { position: absolute; top: 5px; right: 7px; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 4px; color: #64748b; background: transparent; font-size: 15px; line-height: 1; }
@@ -73,6 +90,10 @@
     .filter-error { margin: 0 0 8px; color: #b91c1c; font-size: 12px; }
     .filter-actions { display: flex; justify-content: flex-end; gap: 7px; }
     .filter-actions button { height: 30px; padding: 0 9px; font-size: 12px; }
+    .grid-count { height: 30px; padding: 7px 9px 5px; color: #6b7280; background: #fff; font-size: 12px; text-align: left; }
+    .sort-section { display: grid; gap: 6px; margin: 8px 0 10px; padding-top: 8px; border-top: 1px solid #e5e7eb; }
+    .sort-section button { height: 30px; padding: 0 9px; font-size: 12px; text-align: left; }
+    .sort-section button.active { color: #1d4ed8; border-color: #93c5fd; background: #eff6ff; }
   </style>
 </head>
 <body>
@@ -89,7 +110,8 @@
       { key: "支付方式", width: 120, kind: "text" },
     ];
     const DRAFT_KEY_PREFIX = "account_book_transaction_editor_draft_v2";
-    const state = { version: null, rows: [], draftRows: new Map(), draftSessionId: "", args: {}, mode: "view", selected: new Set(), deletedIds: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, confirmingDelete: false, confirmingOptionSave: false, batchEditing: false, dragKey: null, openFilter: null, filterDraft: null, filterError: "" };
+    const OPTION_DRAFT_KEY_PREFIX = "account_book_option_editor_draft_v1";
+    const state = { version: null, rows: [], draftRows: new Map(), draftSessionId: "", optionDraftId: "", optionDirty: false, optionDirtyReported: false, lastOptionSubmitToken: "", args: {}, mode: "view", selected: new Set(), deletedIds: new Set(), selectionKey: "", active: null, anchor: null, range: null, layout: null, layoutSignature: null, dateMode: null, confirmingReset: false, confirmingDelete: false, confirmingCancel: false, confirmingOptionSave: false, batchEditing: false, manualEntryOpen: false, manualEntryRow: null, manualEntryError: "", dragKey: null, openFilter: null, localFilters: null, filterResetKey: null, filterDraft: null, filterError: "", sortKey: null, sortDirection: null };
     const message = (type, data = {}) => window.parent.postMessage({ isStreamlitMessage: true, type, ...data }, "*");
     const setValue = value => message("streamlit:setComponentValue", { value });
     const setHeight = () => {
@@ -104,18 +126,127 @@
       const text = String(value ?? "").trim().replace("T", " ");
       return text.length === 16 ? `${text}:00` : text;
     };
-    const calendarDateForInput = value => dateForInput(value).match(/^\d{4}-\d{2}-\d{2}/)?.[0] || "";
-    const mergeCalendarDate = (value, calendarDate) => {
-      if (!calendarDate) return dateForInput(value);
-      const time = dateForInput(value).match(/^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})$/)?.[1] || "00:00:00";
-      return `${calendarDate} ${time}`;
-    };
-    const selectDateSegment = input => {
+    const DATETIME_SEGMENTS = [[0, 4], [5, 7], [8, 10], [11, 13], [14, 16], [17, 19]];
+    const TIME_SEGMENTS = [[0, 2], [3, 5], [6, 8]];
+    const segmentAtCursor = (input, segments) => {
       const cursor = input.selectionStart ?? 0;
-      const segments = [[0, 4], [5, 7], [8, 10], [11, 13], [14, 16], [17, 19]];
-      const segment = segments.find(([start, end]) => cursor >= start && cursor < end)
-        || segments.find(([start]) => cursor < start) || segments[segments.length - 1];
-      input.setSelectionRange(segment[0], segment[1]);
+      const containing = segments.findIndex(([start, end]) => cursor >= start && cursor < end);
+      if (containing >= 0) return containing;
+      const following = segments.findIndex(([start]) => cursor < start);
+      return following >= 0 ? following : segments.length - 1;
+    };
+    const selectSegment = (input, segments, index) => {
+      const [start, end] = segments[index];
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(start, end);
+      input._segmentState = { index, buffer: "", selected: true };
+    };
+    const selectDateSegment = input => selectSegment(input, DATETIME_SEGMENTS, segmentAtCursor(input, DATETIME_SEGMENTS));
+    const selectTimeSegment = input => selectSegment(input, TIME_SEGMENTS, segmentAtCursor(input, TIME_SEGMENTS));
+    const segmentParts = (input, segments) => {
+      const value = String(input.value || "");
+      return segments.map(([start, end]) => value.slice(start, end).replace(/\D/g, ""));
+    };
+    const writeSegment = (input, segments, index, text) => {
+      const parts = segmentParts(input, segments);
+      const width = segments[index][1] - segments[index][0];
+      parts[index] = String(text || "").slice(0, width);
+      const separators = segments.length === DATETIME_SEGMENTS.length
+        ? ["-", "-", " ", ":", ":", ""] : [":", ":", ""];
+      input.value = parts.map((part, i) => part.padEnd(segments[i][1] - segments[i][0], " ") + separators[i]).join("");
+    };
+    const emitInput = input => input.dispatchEvent(new Event("input", { bubbles: true }));
+    const finishSegment = (input, segments, index) => {
+      const state = input._segmentState || { index, buffer: "", selected: false };
+      const width = segments[index][1] - segments[index][0];
+      const current = state.buffer || segmentParts(input, segments)[index];
+      if (current && current.length < width) writeSegment(input, segments, index, current.padStart(width, "0"));
+      input._segmentState = { index, buffer: "", selected: false };
+    };
+    const bindSegmentedInput = (input, segments, onBlur) => {
+      input._segmentState = { index: 0, buffer: "", selected: false };
+      input.addEventListener("mouseup", event => {
+        event.preventDefault();
+        const index = segmentAtCursor(input, segments);
+        const previous = input._segmentState;
+        if (previous?.buffer && previous.index !== index) {
+          finishSegment(input, segments, previous.index);
+          emitInput(input);
+        }
+        selectSegment(input, segments, index);
+      });
+      input.addEventListener("beforeinput", event => {
+        const state = input._segmentState || { index: segmentAtCursor(input, segments), buffer: "", selected: false };
+        const index = Math.max(0, Math.min(segments.length - 1, state.index));
+        const width = segments[index][1] - segments[index][0];
+        if (event.inputType === "insertText" && /^[0-9]+$/.test(event.data || "")) {
+          event.preventDefault();
+          const digits = String(event.data);
+          const buffer = state.selected ? "" : (state.buffer || "");
+          const next = (buffer + digits).slice(0, width);
+          writeSegment(input, segments, index, next);
+          input._segmentState = { index, buffer: next, selected: false };
+          emitInput(input);
+          if (next.length >= width) {
+            finishSegment(input, segments, index);
+            const nextIndex = Math.min(segments.length - 1, index + 1);
+            selectSegment(input, segments, nextIndex);
+          } else {
+            const [start] = segments[index];
+            input.setSelectionRange(start + next.length, start + next.length);
+          }
+          return;
+        }
+        if (event.inputType === "insertFromPaste") {
+          event.preventDefault();
+          const digits = String(event.data || "").replace(/\D/g, "");
+          let cursor = index;
+          let offset = 0;
+          while (cursor < segments.length && offset < digits.length) {
+            const widthAtCursor = segments[cursor][1] - segments[cursor][0];
+            const part = digits.slice(offset, offset + widthAtCursor);
+            writeSegment(input, segments, cursor, part);
+            offset += part.length;
+            if (part.length === widthAtCursor) cursor += 1; else break;
+          }
+          emitInput(input);
+          const selectedIndex = Math.min(segments.length - 1, cursor);
+          selectSegment(input, segments, selectedIndex);
+          return;
+        }
+        if (event.inputType === "deleteContentBackward" || event.inputType === "deleteContentForward") {
+          event.preventDefault();
+          writeSegment(input, segments, index, "");
+          input._segmentState = { index, buffer: "", selected: false };
+          emitInput(input);
+          const [start] = segments[index];
+          input.setSelectionRange(start, start);
+        }
+      });
+      input.addEventListener("paste", event => {
+        const digits = String(event.clipboardData?.getData("text") || "").replace(/\D/g, "");
+        if (!digits) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const state = input._segmentState || { index: segmentAtCursor(input, segments) };
+        let cursor = Math.max(0, Math.min(segments.length - 1, state.index));
+        let offset = 0;
+        while (cursor < segments.length && offset < digits.length) {
+          const width = segments[cursor][1] - segments[cursor][0];
+          const part = digits.slice(offset, offset + width);
+          writeSegment(input, segments, cursor, part);
+          offset += part.length;
+          if (part.length === width) cursor += 1; else break;
+        }
+        emitInput(input);
+        selectSegment(input, segments, Math.min(segments.length - 1, cursor));
+      });
+      input.addEventListener("blur", () => {
+        const state = input._segmentState || { index: 0 };
+        finishSegment(input, segments, state.index);
+        emitInput(input);
+        if (onBlur) onBlur(input);
+      });
     };
     const displayTime = value => {
       const text = String(value ?? "").replace("T", " ");
@@ -171,14 +302,64 @@
       const key = draftStorageKey(sessionId);
       if (key) localStorage.removeItem(key);
     };
+    const optionDraftStorageKey = (draftId = state.optionDraftId) => draftId ? `${OPTION_DRAFT_KEY_PREFIX}:${draftId}` : "";
+    const loadOptionDraft = draftId => {
+      try {
+        const key = optionDraftStorageKey(draftId);
+        const stored = key ? JSON.parse(localStorage.getItem(key) || "{}") : {};
+        return { rows: Array.isArray(stored.rows) ? stored.rows : [], dirty: Boolean(stored.dirty) };
+      } catch (_) { return { rows: [], dirty: false }; }
+    };
+    const saveOptionDraft = () => {
+      const key = optionDraftStorageKey();
+      if (state.mode === "option-edit" && key) {
+        localStorage.setItem(key, JSON.stringify({ rows: state.rows, dirty: state.optionDirty }));
+      }
+    };
+    const clearOptionDraft = draftId => {
+      const key = optionDraftStorageKey(draftId);
+      if (key) localStorage.removeItem(key);
+    };
+    const markOptionDirty = () => {
+      if (state.mode !== "option-edit") return;
+      const wasDirty = state.optionDirty;
+      state.optionDirty = true;
+      saveOptionDraft();
+      if (!wasDirty && !state.optionDirtyReported) {
+        state.optionDirtyReported = true;
+        setValue({ action: "option_dirty" });
+      }
+    };
     const syncDraftRows = () => {
       if (state.mode !== "edit") return;
       state.rows.forEach(row => state.draftRows.set(String(row["记录ID"]), JSON.parse(JSON.stringify(row))));
       saveDraftState();
     };
+    const sortRows = rows => {
+      if (!state.sortKey || !state.sortDirection) return rows;
+      const direction = state.sortDirection === "desc" ? -1 : 1;
+      return rows.map((row, index) => ({ row, index })).sort((left, right) => {
+        let comparison;
+        if (state.sortKey === "金额") {
+          comparison = (Number(left.row["金额"]) || 0) - (Number(right.row["金额"]) || 0);
+        } else {
+          comparison = String(left.row["时间"] ?? "").localeCompare(String(right.row["时间"] ?? ""), "zh-CN");
+        }
+        return comparison === 0 ? left.index - right.index : comparison * direction;
+      }).map(item => item.row);
+    };
     const filterDraftRows = rows => {
-      const filters = state.args.filters || {};
+      const filters = state.localFilters || cloneFilters(state.args.filters || {});
       const visibleMonth = String(state.args.visible_month || "");
+      const viewMode = String(state.args.view_mode || "month");
+      const visibleIds = new Set((state.args.visible_ids || []).map(String));
+      const searchKeyword = String(state.args.search_keyword || "").trim();
+      const keywordGroups = searchKeyword
+        ? searchKeyword.split(/\s+OR\s+|或/i).filter(Boolean).map(group => group.split(/\s+AND\s+|且/i).map(term => term.trim().toLocaleLowerCase()).filter(Boolean))
+        : [];
+      const matchesKeyword = row => !keywordGroups.length || keywordGroups.some(terms => terms.every(term =>
+        [row["备注"], row["分类"], row["对方"]].some(value => String(value || "").toLocaleLowerCase().includes(term))
+      ));
       const accounts = new Set(filters.accounts || []);
       const tradeTypes = new Set(filters.trade_types || []);
       const categories = new Set(filters.categories || []);
@@ -187,9 +368,11 @@
       const reimbursementStatuses = new Set(filters.reimbursement_statuses || []);
       const amountMin = filters.amount_min == null ? null : Number(filters.amount_min);
       const amountMax = filters.amount_max == null ? null : Number(filters.amount_max);
-      return rows.filter(row => {
+      return sortRows(rows.filter(row => {
         const rowMonth = String(row["时间"] || "").slice(0, 7);
-        if (visibleMonth && rowMonth !== visibleMonth) return false;
+        if (viewMode === "search") {
+          if (searchKeyword ? !matchesKeyword(row) : !visibleIds.has(String(row["记录ID"]))) return false;
+        } else if (visibleMonth && rowMonth !== visibleMonth) return false;
         if (!matchesValue(row["账户"], accounts)) return false;
         if (!matchesValue(row["收支"], tradeTypes)) return false;
         if (!matchesValue(row["分类"], categories)) return false;
@@ -199,7 +382,7 @@
         if (amountMin !== null && (!Number.isFinite(amount) || amount < amountMin)) return false;
         if (amountMax !== null && (!Number.isFinite(amount) || amount > amountMax)) return false;
         return true;
-      });
+      }));
     };
     const filterColumnMap = () => ({
       [BASE_COLUMNS[1].key]: { key: "accounts", label: BASE_COLUMNS[1].key },
@@ -210,12 +393,14 @@
       [BASE_COLUMNS[3].key]: { key: "amount", label: BASE_COLUMNS[3].key },
     });
     const filterConfigFor = key => filterColumnMap()[key] || null;
+    const sortConfigFor = key => ["时间", "金额"].includes(key) ? { key, label: key } : null;
     const activeFilter = key => {
-      const config = filterConfigFor(key), filters = state.args.filters || {};
+      const config = filterConfigFor(key), filters = state.localFilters || cloneFilters(state.args.filters || {});
       if (!config) return false;
       if (config.key === "amount") return filters.amount_min != null || filters.amount_max != null;
       return Array.isArray(filters[config.key]) && filters[config.key].length > 0;
     };
+    const activeSort = key => state.sortKey === key && Boolean(state.sortDirection);
     const cloneFilters = filters => ({
       accounts: [...(filters?.accounts || [])], trade_types: [...(filters?.trade_types || [])],
       categories: [...(filters?.categories || [])], life_tags: [...(filters?.life_tags || [])],
@@ -225,18 +410,21 @@
     const filterOptionValues = key => state.args.filter_options?.[key] || [];
     const filterPopoverMarkup = () => {
       const config = filterConfigFor(state.openFilter);
-      if (!config) return "";
-      const filters = state.filterDraft || cloneFilters(state.args.filters || {});
-      const title = esc(config.label);
+      const sortConfig = sortConfigFor(state.openFilter);
+      if (!config && !sortConfig) return "";
+      const filters = state.filterDraft || cloneFilters(state.localFilters || state.args.filters || {});
+      const title = esc((config || sortConfig).label);
       let body = "";
-      if (config.key === "amount") {
-        body = `<div class="filter-range"><input id="filter-amount-min" type="number" step="0.01" min="0" placeholder="最低金额" value="${esc(filters.amount_min ?? "")}"><input id="filter-amount-max" type="number" step="0.01" min="0" placeholder="最高金额" value="${esc(filters.amount_max ?? "")}"></div>`;
-      } else {
+      if (config?.key === "amount") {
+        body = `<div class="filter-range"><input id="filter-amount-min" class="amount-input" type="number" step="0.01" min="0" placeholder="最低金额" value="${esc(filters.amount_min ?? "")}"><input id="filter-amount-max" class="amount-input" type="number" step="0.01" min="0" placeholder="最高金额" value="${esc(filters.amount_max ?? "")}"></div>`;
+      } else if (config) {
         const selected = new Set(filters[config.key] || []);
         body = `<div class="filter-options">${filterOptionValues(config.key).map(value => `<label class="filter-option"><input type="checkbox" data-filter-option="${esc(value)}" ${selected.has(value) ? "checked" : ""}><span>${esc(value)}</span></label>`).join("")}</div>`;
       }
-      const applyButton = config.key === "amount" ? '<button id="filter-apply" class="primary" type="button">应用筛选</button>' : "";
-      return `<div class="filter-popover" id="filter-popover" role="dialog" aria-label="筛选${title}"><h4>筛选${title}</h4>${state.filterError ? `<p class="filter-error">${esc(state.filterError)}</p>` : ""}${body}<div class="filter-actions"><button id="filter-clear-column" type="button">清除本列</button><button id="filter-clear-all" type="button">清除全部</button><button id="filter-cancel" type="button">取消</button>${applyButton}</div></div>`;
+      const sortMarkup = sortConfig ? `<div class="sort-section"><button type="button" data-sort-direction="asc" class="${activeSort(sortConfig.key) && state.sortDirection === "asc" ? "active" : ""}">升序排列</button><button type="button" data-sort-direction="desc" class="${activeSort(sortConfig.key) && state.sortDirection === "desc" ? "active" : ""}">降序排列</button><button type="button" data-sort-direction="clear" class="${!activeSort(sortConfig.key) ? "active" : ""}">取消排序</button></div>` : "";
+      const applyButton = config?.key === "amount" ? '<button id="filter-apply" class="primary" type="button">应用筛选</button>' : "";
+      const filterActions = config ? `<div class="filter-actions"><button id="filter-clear-column" type="button">清除本列</button><button id="filter-clear-all" type="button">清除全部</button><button id="filter-cancel" type="button">取消</button>${applyButton}</div>` : '<div class="filter-actions"><button id="filter-cancel" type="button">关闭</button></div>';
+      return `<div class="filter-popover" id="filter-popover" role="dialog" aria-label="筛选或排序${title}"><h4>${config ? `筛选${title}` : `排序${title}`}</h4>${state.filterError ? `<p class="filter-error">${esc(state.filterError)}</p>` : ""}${body}${sortMarkup}${filterActions}</div>`;
     };
     const selectedCategoryTradeType = () => {
       const types = new Set(state.rows
@@ -267,9 +455,19 @@
       if (row["分类"] === "过手转入") {
         return row["报销状态"] === "待转出" ? "pending" : row["报销状态"] === "已转出" ? "settled" : "";
       }
+      if (row["分类"] === "过手转出") {
+        return row["报销状态"] === "已转出" ? "settled" : "";
+      }
+      if (row["分类"] === "垫付报销") {
+        return row["报销状态"] === "已结清" ? "settled" : "";
+      }
       return "";
     };
     const normaliseRow = (row, field) => {
+      if (field === "金额" && row["金额"] !== "") {
+        const amount = Number(row["金额"]);
+        if (Number.isFinite(amount)) row["金额"] = Math.round((amount + Number.EPSILON) * 100) / 100;
+      }
       if (field === "收支") {
         const allowed = row["收支"] === "收入" ? state.args.income_categories : state.args.expense_categories;
         if (row["分类"] && !allowed.includes(row["分类"])) row["分类"] = "";
@@ -322,6 +520,9 @@
       const value = row[column.key] ?? "";
       const data = `data-row="${rowIndex}" data-col="${colIndex}" data-field="${column.key}"`;
       if (state.mode === "option-edit") {
+        if (column.kind === "reorder") {
+          return `<td class="${classes}" tabindex="0" ${data}><div class="reorder-controls"><button type="button" data-move-row="up" data-row="${rowIndex}" aria-label="上移" title="上移" ${rowIndex === 0 ? "disabled" : ""}>&#9650;</button><button type="button" data-move-row="down" data-row="${rowIndex}" aria-label="下移" title="下移" ${rowIndex === state.rows.length - 1 ? "disabled" : ""}>&#9660;</button></div></td>`;
+        }
         if (column.kind === "checkbox") {
           return `<td class="${classes}" tabindex="0" ${data}><input type="checkbox" ${data} ${value ? "checked" : ""}></td>`;
         }
@@ -336,8 +537,8 @@
           || (column.key === "标签" && (tagIsLocked(row) || !["支出", "退款", "收入"].includes(row["收支"])));
         return `<td class="${classes}" tabindex="0" ${data}><select ${data} ${disabled ? "disabled" : ""}>${optionHtml(optionsFor(row, column.key), value)}</select></td>`;
       }
-      if (column.kind === "datetime-text") return `<td class="${classes}" tabindex="0" ${data}><div class="datetime-editor"><input class="datetime-text" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM:SS" value="${esc(dateForInput(value))}" ${data}><button type="button" class="date-picker-button" data-date-picker-trigger aria-label="选择日期" title="选择日期">&#128197;</button><input class="date-picker" type="date" tabindex="-1" aria-hidden="true" value="${esc(calendarDateForInput(value))}" ${data}></div></td>`;
-      if (column.kind === "number") return `<td class="${classes}" tabindex="0" ${data}><input type="number" min="0.01" step="0.01" value="${esc(Number(value || 0).toFixed(2))}" ${data}></td>`;
+      if (column.kind === "datetime-text") return `<td class="${classes}" tabindex="0" ${data}><input class="datetime-text" type="text" inputmode="numeric" placeholder="YYYY-MM-DD HH:MM:SS" value="${esc(dateForInput(value))}" ${data}></td>`;
+      if (column.kind === "number") return `<td class="${classes}" tabindex="0" ${data}><input class="amount-input" type="number" min="0.01" step="any" value="${esc(value === "" ? "" : value)}" ${data}></td>`;
       return `<td class="${classes}" tabindex="0" ${data}><input type="text" value="${esc(value)}" ${data}></td>`;
     };
     const render = () => {
@@ -345,13 +546,16 @@
       syncDraftRows();
       const previousWrap = root.querySelector(".table-wrap");
       const previousScroll = previousWrap ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft } : null;
-      root.className = state.mode === "yearly-summary" ? "grid yearly-summary" : "grid";
+      root.className = state.mode === "yearly-summary" ? "grid yearly-summary" : `grid ${state.mode}`;
       document.documentElement.style.setProperty("--grid-height", `${state.args.height || 500}px`);
-      if (state.mode === "actions") { renderActions(root); return; }
+      if (state.mode === "time-input") { renderTimeInput(root); return; }
       const cols = columns();
       const selectedCount = state.selected.size;
       const toolbar = state.mode === "edit"
-        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="batch-edit" type="button" ${selectedCount ? "" : "disabled"}>批量修改</button><button id="copy-selected-draft" type="button" ${selectedCount === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected-draft" class="danger" type="button" ${selectedCount ? "" : "disabled"}>删除选中行</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>` : "";
+        ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="manual-entry" type="button">手动记账</button><button id="batch-edit" type="button" ${selectedCount ? "" : "disabled"}>批量修改</button><button id="copy-selected-draft" type="button" ${selectedCount === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected-draft" class="danger" type="button" ${selectedCount ? "" : "disabled"}>删除选中行</button><button id="cancel" type="button">取消修改</button><button id="save" class="primary" type="button">💾 保存修改</button></div>`
+        : state.mode === "view"
+          ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="manual-entry" type="button">手动记账</button><button id="edit-selected" class="primary" type="button" ${selectedCount === 1 ? "" : "disabled"}>修改选中行</button><button id="begin-edit" type="button">修改流水</button><button id="copy-selected" type="button" ${selectedCount === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected" class="danger" type="button" ${selectedCount ? "" : "disabled"}>🗑️ 删除选中行</button></div>`
+          : "";
       const optionToolbar = state.mode === "option-edit"
         ? `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="save-options" class="primary" type="button">保存修改</button></div>` : "";
       const summaryToolbar = "";
@@ -359,7 +563,7 @@
         const emptyMessage = state.mode === "yearly-summary" ? "当前年度没有支出记录。"
           : state.mode === "generic-view" ? (state.args.empty_message || "暂无数据。")
           : state.mode === "option-edit" ? "暂无可管理条目。" : "当前编辑草稿已无流水。";
-         root.innerHTML = `${toolbar}${optionToolbar}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="empty">${emptyMessage}</div>`;
+         root.innerHTML = `${toolbar}${optionToolbar}${manualModalMarkup()}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}${cancelModalMarkup()}<div class="empty">${emptyMessage}</div>`;
         bindEvents(root); setHeight(); return;
       }
       const selectable = state.mode === "view" || state.mode === "edit";
@@ -370,20 +574,35 @@
         const draggable = state.mode !== "yearly-summary" || col.key !== summaryFirstKey();
         const resizeHandle = state.mode === "yearly-summary" ? "" : `<span class="resize" data-resize="${col.key}"></span>`;
         const filterConfig = filterConfigFor(col.key);
-        const filterButton = filterConfig ? `<button type="button" class="filter-trigger ${activeFilter(col.key) ? "active" : ""}" data-filter-key="${esc(col.key)}" aria-label="筛选${esc(filterConfig.label)}" title="筛选">&#9662;</button>` : "";
-        return `<th class="${firstClass}${filterConfig ? " filterable" : ""}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${esc(col.label || col.key)}</span>${filterButton}${resizeHandle}</th>`;
+        const sortConfig = sortConfigFor(col.key);
+        const menuConfig = filterConfig || sortConfig;
+        const filterButton = menuConfig ? `<button type="button" class="filter-trigger ${activeFilter(col.key) || activeSort(col.key) ? "active" : ""}" data-filter-key="${esc(col.key)}" aria-label="筛选或排序${esc(menuConfig.label)}" title="筛选或排序">&#9662;</button>` : "";
+        return `<th class="${firstClass}${menuConfig ? " filterable" : ""}" draggable="${draggable}" data-column="${col.key}"><span class="header-label">${esc(col.label || col.key)}</span>${filterButton}${resizeHandle}</th>`;
       }).join("");
-       root.innerHTML = `${toolbar}${optionToolbar}${summaryToolbar}${filterPopoverMarkup()}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+       root.innerHTML = `${toolbar}${optionToolbar}${summaryToolbar}${filterPopoverMarkup()}${manualModalMarkup()}${batchModalMarkup()}${deleteDraftMarkup()}${confirmationMarkup()}${optionSaveMarkup()}${cancelModalMarkup()}<div class="table-wrap"><table role="grid"><colgroup>${selectable ? '<col style="width:54px">' : ''}${cols.map(col => `<col style="width:${state.layout.widths[col.key]}px">`).join("")}</colgroup><thead><tr>${selectHeader}${headerCells}</tr></thead><tbody>${state.rows.map((row, rowIndex) => `<tr class="${rowClass(row)}">${selectCells(row, rowIndex)}${cols.map((col, colIndex) => cell(row, rowIndex, col, colIndex)).join("")}</tr>`).join("")}</tbody></table></div>`;
+      root.querySelector(".table-wrap")?.insertAdjacentHTML(
+        "afterbegin", `<div class="grid-count">当前 ${state.rows.length} 条</div>`
+      );
       bindEvents(root);
+      if (state.mode === "edit") {
+        root.querySelectorAll("input.datetime-text").forEach(input => bindSegmentedInput(input, DATETIME_SEGMENTS, target => {
+          target.value = dateForStore(target.value.replace(/\s+/g, " ").trim());
+          target.dispatchEvent(new Event("change", { bubbles: true }));
+        }));
+      }
+      const manualTimeInput = root.querySelector("#manual-trade-time");
+      if (manualTimeInput) bindSegmentedInput(manualTimeInput, DATETIME_SEGMENTS, target => {
+        if (state.manualEntryRow) state.manualEntryRow["时间"] = dateForStore(target.value);
+      });
       if (previousScroll) { const currentWrap = root.querySelector(".table-wrap"); currentWrap.scrollTop = previousScroll.top; currentWrap.scrollLeft = previousScroll.left; }
       const all = document.getElementById("select-all");
       if (all) { all.checked = selectedCount === state.rows.length; all.indeterminate = selectedCount > 0 && selectedCount < state.rows.length; }
       setHeight();
     };
     const confirmationMarkup = () => state.confirmingReset
-      ? '<div class="confirm-box">确定要恢复默认列布局吗？当前列宽和列顺序将被清除。<button id="confirm-reset" type="button">确认恢复</button><button id="cancel-reset" type="button">取消</button></div>' : "";
+      ? '<div class="confirm-modal-backdrop"><section class="confirm-modal" role="dialog" aria-modal="true"><p>确定要恢复默认列布局吗？当前列宽和列顺序将被清除。</p><div class="confirm-modal-actions"><button id="cancel-reset" type="button">取消</button><button id="confirm-reset" class="primary" type="button">确认恢复</button></div></section></div>' : "";
     const optionSaveMarkup = () => state.confirmingOptionSave
-      ? '<div class="confirm-box">已标记的条目会从后续可选项中移除，历史账目不会删除。确定保存吗？<button id="confirm-save-options" class="danger" type="button">确认保存</button><button id="cancel-save-options" type="button">取消</button></div>' : "";
+      ? '<div class="confirm-modal-backdrop"><section class="confirm-modal" role="dialog" aria-modal="true"><p>已标记的条目会从后续可选项中移除，历史账目不会删除。确定保存吗？</p><div class="confirm-modal-actions"><button id="cancel-save-options" type="button">取消</button><button id="confirm-save-options" class="danger" type="button">确认保存</button></div></section></div>' : "";
     const selectedRows = () => state.rows.filter(row => state.selected.has(String(row["记录ID"])));
     const commonOptions = (rows, resolver) => {
       if (!rows.length) return [];
@@ -395,6 +614,51 @@
       Array.from(new Set(values || [])).forEach(item => options.push(`<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`));
       if (clearLabel) options.push(`<option value="__clear__" ${value === "__clear__" ? "selected" : ""}>${clearLabel}</option>`);
       return options.join("");
+    };
+    const localDateTimeNow = () => {
+      const now = new Date();
+      const pad = value => String(value).padStart(2, "0");
+      return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    };
+    const newManualEntryRow = () => {
+      const row = {
+        "时间": localDateTimeNow(),
+        "账户": (state.args.accounts || [""])[0] || "",
+        "收支": "支出",
+        "金额": 0.01,
+        "分类": (state.args.expense_categories || [""])[0] || "",
+        "标签": "",
+        "报销状态": "",
+        "备注": "",
+        "对方": "",
+        "支付方式": "",
+      };
+      normaliseRow(row, "分类");
+      return row;
+    };
+    const openManualEntry = () => {
+      state.manualEntryRow = newManualEntryRow();
+      state.manualEntryError = "";
+      state.manualEntryOpen = true;
+      render();
+    };
+    const manualModalMarkup = () => {
+      if (!state.manualEntryOpen || !state.manualEntryRow) return "";
+      const row = state.manualEntryRow;
+      const categories = row["收支"] === "收入"
+        ? (state.args.income_categories || []) : (state.args.expense_categories || []);
+      const tags = editableTagOptionsFor(row);
+      const statuses = statusRuleFor(row)?.statuses || [];
+      return `<div class="manual-modal-backdrop"><section class="manual-modal" role="dialog" aria-modal="true" aria-labelledby="manual-entry-title"><h3 id="manual-entry-title">手动记账</h3><div class="manual-form-grid"><div class="manual-field"><label for="manual-trade-time">交易时间（24小时制）</label><input id="manual-trade-time" type="text" maxlength="19" value="${esc(row["时间"])}"></div><div class="manual-field"><label for="manual-account">账户</label><select id="manual-account">${optionHtml(state.args.accounts || [], row["账户"])}</select></div><div class="manual-field"><label for="manual-trade-type">收支类型</label><select id="manual-trade-type">${optionHtml(state.args.trade_types || [], row["收支"])}</select></div><div class="manual-field"><label for="manual-amount">金额</label><input id="manual-amount" class="amount-input" type="number" min="0.01" step="0.01" value="${esc(row["金额"])}"></div><div class="manual-field"><label for="manual-category">分类</label><select id="manual-category">${optionHtml(categories, row["分类"])}</select></div><div class="manual-field"><label for="manual-tag">标签</label><select id="manual-tag" ${tagIsLocked(row) ? "disabled" : ""}>${optionHtml(tags, row["标签"])}</select></div><div class="manual-field"><label for="manual-status">报销状态</label><select id="manual-status" ${statuses.length ? "" : "disabled"}>${optionHtml(statuses, row["报销状态"])}</select></div><div class="manual-field"><label for="manual-counterparty">交易对方</label><input id="manual-counterparty" type="text" value="${esc(row["对方"])}"></div><div class="manual-field"><label for="manual-payment-channel">支付方式</label><input id="manual-payment-channel" type="text" value="${esc(row["支付方式"])}"></div><div class="manual-field full"><label for="manual-remark">备注</label><input id="manual-remark" type="text" value="${esc(row["备注"])}"></div></div>${state.manualEntryError ? `<p class="manual-error">${esc(state.manualEntryError)}</p>` : ""}<div class="manual-modal-actions"><button id="confirm-manual-entry" class="primary" type="button">保存记录</button><button id="cancel-manual-entry" type="button">取消</button></div></section></div>`;
+    };
+    const validManualDateTime = value => {
+      const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+      if (!match) return false;
+      const [, year, month, day, hour, minute, second] = match.map(Number);
+      const parsed = new Date(year, month - 1, day, hour, minute, second);
+      return parsed.getFullYear() === year && parsed.getMonth() === month - 1
+        && parsed.getDate() === day && parsed.getHours() === hour
+        && parsed.getMinutes() === minute && parsed.getSeconds() === second;
     };
     const batchModalMarkup = () => {
       if (!state.batchEditing) return "";
@@ -416,41 +680,21 @@
       return `<div class="batch-modal-backdrop"><section class="batch-modal" role="dialog" aria-modal="true" aria-labelledby="batch-edit-title"><h3 id="batch-edit-title">批量修改</h3><p class="batch-hint">未选择的项目保持原值；修改结果先保存到浏览器草稿。</p><div class="batch-field"><label for="batch-trade-type">设置收支</label><select id="batch-trade-type">${batchOptionHtml(tradeTypes, values.tradeType)}</select></div><div class="batch-field"><label for="batch-category">设置分类</label><select id="batch-category" ${dependentDisabled ? "disabled" : ""}>${batchOptionHtml(categories, values.category, "清空分类")}</select></div><div class="batch-field"><label for="batch-tag">设置标签</label><select id="batch-tag" ${dependentDisabled ? "disabled" : ""}>${batchOptionHtml(tags, values.tag, "清空标签")}</select></div><div class="batch-field"><label for="batch-reimbursement-status">设置报销状态</label><select id="batch-reimbursement-status" ${statusDisabled ? "disabled" : ""}>${batchOptionHtml(statuses, values.reimbursementStatus)}</select></div><div class="batch-modal-actions"><button id="cancel-batch-edit" type="button">取消</button><button id="confirm-batch-edit" class="primary" type="button">确认修改</button></div></section></div>`;
     };
     const deleteDraftMarkup = () => state.confirmingDelete
-      ? '<div class="confirm-box">确定从编辑草稿中移除已勾选的流水吗？只有点击“保存修改”后才会删除数据库记录。<button id="confirm-delete-draft" class="danger" type="button">确认移除</button><button id="cancel-delete-draft" type="button">取消</button></div>' : "";
-    const requestReset = () => { state.confirmingReset = true; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
-    const applyReset = () => { localStorage.removeItem(currentLayoutKey()); state.layout = defaults(); state.confirmingReset = false; state.mode === "actions" ? renderActions(document.getElementById("grid")) : render(); };
+      ? '<div class="confirm-modal-backdrop"><section class="confirm-modal" role="dialog" aria-modal="true"><p>确定从编辑草稿中移除已勾选的流水吗？只有点击“保存修改”后才会删除数据库记录。</p><div class="confirm-modal-actions"><button id="cancel-delete-draft" type="button">取消</button><button id="confirm-delete-draft" class="danger" type="button">确认移除</button></div></section></div>' : "";
+    const cancelModalMarkup = () => state.confirmingCancel
+      ? '<div class="confirm-modal-backdrop"><section class="confirm-modal" role="dialog" aria-modal="true"><p>当前整表修改尚未保存，确定要放弃吗？</p><div class="confirm-modal-actions"><button id="cancel-cancel-edit" type="button">继续编辑</button><button id="confirm-cancel-edit" class="danger" type="button">放弃修改</button></div></section></div>' : "";
+    const requestReset = () => { state.confirmingReset = true; render(); };
+    const applyReset = () => { localStorage.removeItem(currentLayoutKey()); state.layout = defaults(); state.confirmingReset = false; render(); };
     const bindResetConfirmation = root => {
       root.querySelector("#confirm-reset")?.addEventListener("click", applyReset);
-      root.querySelector("#cancel-reset")?.addEventListener("click", () => { state.confirmingReset = false; state.mode === "actions" ? renderActions(root) : render(); });
+      root.querySelector("#cancel-reset")?.addEventListener("click", () => { state.confirmingReset = false; render(); });
     };
-    const renderActions = root => {
-      state.selected = readSelection();
+    const renderTimeInput = root => {
+      const value = String(state.args.value || "00:00:00");
       root.className = "";
-      root.innerHTML = `<div class="toolbar"><button id="reset-layout" type="button">恢复默认列布局</button><button id="toggle-date" type="button">${state.dateMode === "datetime" ? "仅显示日期" : "显示到秒"}</button><button id="edit-selected" class="primary" type="button" ${state.selected.size === 1 ? "" : "disabled"}>修改选中行</button><button id="begin-edit" type="button">修改流水</button><button id="copy-selected" type="button" ${state.selected.size === 1 ? "" : "disabled"}>复制选中行</button><button id="delete-selected" class="danger" type="button" ${state.selected.size ? "" : "disabled"}>🗑️ 删除选中行</button></div>${confirmationMarkup()}`;
-      document.getElementById("reset-layout")?.addEventListener("click", requestReset);
-      document.getElementById("toggle-date")?.addEventListener("click", () => { state.dateMode = state.dateMode === "datetime" ? "date" : "datetime"; saveDateMode(); renderActions(root); });
-      document.getElementById("edit-selected")?.addEventListener("click", () => {
-        const selectedIds = [...readSelection()];
-        if (selectedIds.length === 1) setValue({ action: "single_edit", selected_ids: selectedIds });
-        else renderActions(root);
-      });
-      document.getElementById("begin-edit")?.addEventListener("click", () => setValue({ action: "edit" }));
-      document.getElementById("copy-selected")?.addEventListener("click", event => {
-        const selectedIds = [...readSelection()];
-        if (selectedIds.length !== 1) { renderActions(root); return; }
-        event.currentTarget.disabled = true;
-        event.currentTarget.textContent = "正在复制…";
-        setValue({ action: "copy", selected_ids: selectedIds });
-      });
-      document.getElementById("delete-selected")?.addEventListener("click", event => {
-        // 操作栏与表格是独立组件实例；点击时重新读取 localStorage，避免使用同步滞后的内存选择状态。
-        const selectedIds = [...readSelection()];
-        if (!selectedIds.length) { renderActions(root); return; }
-        event.currentTarget.disabled = true;
-        event.currentTarget.textContent = "正在删除…";
-        setValue({ action: "delete", selected_ids: selectedIds });
-      });
-      bindResetConfirmation(root);
+      root.innerHTML = `<input id="segmented-time-input" class="time-input" type="text" inputmode="numeric" maxlength="8" value="${esc(value)}" aria-label="时间">`;
+      const input = root.querySelector("#segmented-time-input");
+      bindSegmentedInput(input, TIME_SEGMENTS, target => setValue(target.value.replace(/\s/g, "")));
       setHeight();
     };
     const updateActive = (row, col, extend = false) => {
@@ -521,7 +765,7 @@
         event.preventDefault(); event.stopPropagation();
         const key = button.dataset.filterKey;
         state.openFilter = state.openFilter === key ? null : key;
-        state.filterDraft = state.openFilter ? cloneFilters(state.args.filters || {}) : null;
+        state.filterDraft = state.openFilter ? cloneFilters(state.localFilters || state.args.filters || {}) : null;
         state.filterError = "";
         render();
       }));
@@ -537,17 +781,46 @@
           popup.style.top = `${Math.min(window.innerHeight - 12, rect.bottom + 6)}px`;
         }
         const config = filterConfigFor(state.openFilter);
-        const draft = state.filterDraft || cloneFilters(state.args.filters || {});
+        popup.querySelectorAll("[data-sort-direction]").forEach(button => button.addEventListener("click", () => {
+          const direction = button.dataset.sortDirection;
+          state.sortKey = direction === "clear" ? null : state.openFilter;
+          state.sortDirection = direction === "clear" ? null : direction;
+          state.openFilter = null;
+          state.filterDraft = null;
+          state.rows = state.mode === "edit"
+            ? filterDraftRows([...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row))))
+            : filterDraftRows((state.args.rows || []).map(row => JSON.parse(JSON.stringify(row))));
+          render();
+        }));
+        if (!config) {
+          popup.querySelector("#filter-cancel")?.addEventListener("click", () => { state.openFilter = null; state.filterDraft = null; render(); });
+          return;
+        }
+        const draft = state.filterDraft || cloneFilters(state.localFilters || state.args.filters || {});
         const commitFilterDraft = () => {
           const min = draft.amount_min === "" || draft.amount_min == null ? null : Number(draft.amount_min);
           const max = draft.amount_max === "" || draft.amount_max == null ? null : Number(draft.amount_max);
           if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0)) || (min !== null && max !== null && min > max)) {
             state.filterError = "金额范围无效，请检查最小值和最大值"; render(); return;
           }
-          state.args.filters = { ...draft, amount_min: min, amount_max: max };
-          state.filterDraft = cloneFilters(state.args.filters);
+          const nextFilters = { ...draft, amount_min: min, amount_max: max };
+          const currentFilters = cloneFilters(state.localFilters || state.args.filters || {});
+          const changed = JSON.stringify(nextFilters) !== JSON.stringify(currentFilters);
+          state.localFilters = nextFilters;
+          state.filterDraft = cloneFilters(state.localFilters);
           state.filterError = "";
-          setValue({ action: "filters", filters: state.args.filters });
+          if (changed) {
+            if (state.mode === "edit") {
+              syncDraftRows();
+              state.rows = filterDraftRows(
+                [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
+              );
+            } else if (state.mode === "view") {
+              state.rows = filterDraftRows(
+                (state.args.rows || []).map(row => JSON.parse(JSON.stringify(row)))
+              );
+            }
+          }
           render();
         };
         popup.querySelectorAll("[data-filter-option]").forEach(control => control.addEventListener("change", event => {
@@ -583,26 +856,125 @@
       });
       document.getElementById("reset-layout")?.addEventListener("click", requestReset);
       bindResetConfirmation(root);
+      root.querySelectorAll("[data-move-row]").forEach(button => button.addEventListener("click", () => {
+        const rowIndex = Number(button.dataset.row);
+        const offset = button.dataset.moveRow === "up" ? -1 : 1;
+        const targetIndex = rowIndex + offset;
+        if (!Number.isInteger(rowIndex) || targetIndex < 0 || targetIndex >= state.rows.length) return;
+        [state.rows[rowIndex], state.rows[targetIndex]] = [state.rows[targetIndex], state.rows[rowIndex]];
+        markOptionDirty();
+        render();
+      }));
       document.getElementById("save-options")?.addEventListener("click", () => {
         if (state.rows.some(row => row["删除"])) {
           state.confirmingOptionSave = true;
           render();
           return;
         }
+        saveOptionDraft();
         setValue({ action: "save", rows: state.rows });
       });
       document.getElementById("confirm-save-options")?.addEventListener("click", () => {
         state.confirmingOptionSave = false;
+        saveOptionDraft();
         setValue({ action: "save", rows: state.rows });
       });
       document.getElementById("cancel-save-options")?.addEventListener("click", () => {
         state.confirmingOptionSave = false;
         render();
       });
+      document.getElementById("cancel-cancel-edit")?.addEventListener("click", () => { state.confirmingCancel = false; render(); });
+      document.getElementById("confirm-cancel-edit")?.addEventListener("click", () => {
+        state.confirmingCancel = false;
+        syncDraftRows();
+        setValue({ action: "cancel", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] });
+      });
       const draftRowsForSubmit = () => [...state.draftRows.values()]
         .filter(row => !state.deletedIds.has(String(row["记录ID"])));
       document.getElementById("save")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "save", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
-      document.getElementById("cancel")?.addEventListener("click", () => { syncDraftRows(); setValue({ action: "cancel", rows: draftRowsForSubmit(), deleted_ids: [...state.deletedIds] }); });
+      document.getElementById("cancel")?.addEventListener("click", () => { state.confirmingCancel = true; render(); });
+      document.getElementById("manual-entry")?.addEventListener("click", openManualEntry);
+      document.getElementById("toggle-date")?.addEventListener("click", () => { state.dateMode = state.dateMode === "datetime" ? "date" : "datetime"; saveDateMode(); render(); });
+      document.getElementById("edit-selected")?.addEventListener("click", () => {
+        const selectedIds = [...state.selected];
+        if (selectedIds.length === 1) setValue({ action: "single_edit", selected_ids: selectedIds });
+      });
+      document.getElementById("begin-edit")?.addEventListener("click", () => setValue({ action: "edit" }));
+      document.getElementById("copy-selected")?.addEventListener("click", event => {
+        const selectedIds = [...state.selected];
+        if (selectedIds.length !== 1) return;
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = "正在复制…";
+        setValue({ action: "copy", selected_ids: selectedIds });
+      });
+      document.getElementById("delete-selected")?.addEventListener("click", event => {
+        const selectedIds = [...state.selected];
+        if (!selectedIds.length) return;
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = "正在删除…";
+        setValue({ action: "delete", selected_ids: selectedIds });
+      });
+      const manualTextFields = {
+        "manual-trade-time": "时间", "manual-counterparty": "对方",
+        "manual-payment-channel": "支付方式", "manual-remark": "备注",
+      };
+      Object.entries(manualTextFields).forEach(([id, field]) => {
+        document.getElementById(id)?.addEventListener("input", event => {
+          if (state.manualEntryRow) state.manualEntryRow[field] = event.target.value;
+        });
+      });
+      document.getElementById("manual-amount")?.addEventListener("input", event => {
+        if (state.manualEntryRow) state.manualEntryRow["金额"] = event.target.value;
+      });
+      const manualSelectFields = {
+        "manual-account": "账户", "manual-trade-type": "收支",
+        "manual-category": "分类", "manual-tag": "标签", "manual-status": "报销状态",
+      };
+      Object.entries(manualSelectFields).forEach(([id, field]) => {
+        document.getElementById(id)?.addEventListener("change", event => {
+          if (!state.manualEntryRow) return;
+          state.manualEntryRow[field] = event.target.value;
+          normaliseRow(state.manualEntryRow, field);
+          if (["收支", "分类"].includes(field)) render();
+        });
+      });
+      document.getElementById("cancel-manual-entry")?.addEventListener("click", () => {
+        state.manualEntryOpen = false;
+        state.manualEntryRow = null;
+        state.manualEntryError = "";
+        render();
+      });
+      document.getElementById("confirm-manual-entry")?.addEventListener("click", event => {
+        const row = state.manualEntryRow;
+        if (!row) return;
+        if (!validManualDateTime(row["时间"])) {
+          state.manualEntryError = "交易时间须使用有效的 YYYY-MM-DD HH:MM:SS 格式";
+          render();
+          return;
+        }
+        const amount = Number(row["金额"]);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          state.manualEntryError = "金额必须大于 0";
+          render();
+          return;
+        }
+        if (!row["账户"] || !(state.args.trade_types || []).includes(row["收支"])) {
+          state.manualEntryError = "请选择有效的账户和收支类型";
+          render();
+          return;
+        }
+        row["金额"] = Math.round((amount + Number.EPSILON) * 100) / 100;
+        normaliseRow(row, "金额");
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = "正在保存…";
+        const payload = { action: "manual_entry", manual_entry: { ...row } };
+        if (state.mode === "edit") {
+          syncDraftRows();
+          payload.rows = draftRowsForSubmit();
+          payload.deleted_ids = [...state.deletedIds];
+        }
+        setValue(payload);
+      });
       document.getElementById("batch-edit")?.addEventListener("click", () => {
         if (!state.selected.size) return;
         state.batchEditing = true;
@@ -685,24 +1057,9 @@
         if (control.dataset.selectId) { control.checked ? state.selected.add(control.dataset.selectId) : state.selected.delete(control.dataset.selectId); if (state.mode === "view") persistSelection(); render(); return; }
         const row = Number(control.dataset.row), col = Number(control.dataset.col), field = control.dataset.field;
         if (!Number.isInteger(row) || !Number.isInteger(col) || !field) return;
-        if (control.matches("input.date-picker")) {
-          const cell = control.closest("td[data-row]");
-          const nextValue = mergeCalendarDate(state.rows[row][field], control.value);
-          const textInput = cell?.querySelector("input.datetime-text");
-          if (textInput) textInput.value = nextValue;
-          state.rows[row][field] = dateForStore(nextValue);
-          normaliseRow(state.rows[row], field);
-          updateActive(row, col);
-          syncDraftRows();
-          state.rows = filterDraftRows(
-            [...state.draftRows.values()].map(item => JSON.parse(JSON.stringify(item)))
-          );
-          state.active = null; state.anchor = null; state.range = null;
-          render();
-          return;
-        }
         if (state.mode === "option-edit") {
           state.rows[row][field] = control.type === "checkbox" ? control.checked : control.value;
+          markOptionDirty();
           return;
         }
         state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value;
@@ -715,28 +1072,21 @@
           );
           state.active = null; state.anchor = null; state.range = null;
         }
-        if (["时间", "收支", "分类"].includes(field)) render();
+        if (["时间", "收支", "分类", "报销状态"].includes(field)) render();
       });
       root.querySelector("tbody")?.addEventListener("input", event => {
         const control = event.target, row = Number(control.dataset.row), field = control.dataset.field;
-        if (control.matches("input.date-picker")) return;
+        if (state.mode === "option-edit" && Number.isInteger(row) && field) {
+          state.rows[row][field] = control.value;
+          markOptionDirty();
+          return;
+        }
         if (state.mode === "edit" && Number.isInteger(row) && field) { state.rows[row][field] = field === "时间" ? dateForStore(control.value) : control.value; syncDraftRows(); }
       });
       root.querySelector("tbody")?.addEventListener("click", event => {
-        const pickerTrigger = event.target.closest("[data-date-picker-trigger]");
-        if (pickerTrigger) {
-          event.preventDefault();
-          const picker = pickerTrigger.closest("td[data-row]")?.querySelector("input.date-picker");
-          if (picker) {
-            if (typeof picker.showPicker === "function") picker.showPicker();
-            else picker.click();
-          }
-          return;
-        }
         const td = event.target.closest("td[data-row]"); if (!td) return;
         if (state.mode === "option-edit" && event.target.matches("input,select")) return;
         if (state.mode === "edit" && event.target.matches("input,select")) {
-          if (event.target.matches("input.datetime-text")) setTimeout(() => selectDateSegment(event.target), 0);
           updateActive(Number(td.dataset.row), Number(td.dataset.col), event.shiftKey);
           root.querySelector("td.focused")?.classList.remove("focused");
           td.classList.add("focused");
@@ -787,14 +1137,23 @@
       const data = event.data; if (!data || data.type !== "streamlit:render") return;
       const args = data.args || {};
       const nextMode = args.mode || "view";
+      const nextFilterResetKey = String(args.filter_reset_key || "");
       const nextDraftSessionId = String(args.draft_session_id || "");
       const sameDraftSession = nextMode === "edit" && state.draftSessionId === nextDraftSessionId;
       const inMemoryRows = sameDraftSession ? state.draftRows : new Map();
       const inMemoryDeletedIds = sameDraftSession ? state.deletedIds : new Set();
       state.args = args;
       state.mode = nextMode;
+      if (state.filterResetKey !== nextFilterResetKey || !state.localFilters) {
+        state.filterResetKey = nextFilterResetKey;
+        state.localFilters = cloneFilters(args.filters || {});
+        state.openFilter = null;
+        state.filterDraft = null;
+        state.filterError = "";
+      }
       state.selectionKey = args.selection_key || "tx_selection";
       if (args.cleanup_draft_session_id) clearDraftState(String(args.cleanup_draft_session_id));
+      if (args.cleanup_option_draft_id) clearOptionDraft(String(args.cleanup_option_draft_id));
       if (state.version !== args.version) {
         state.version = args.version; state.selected = new Set(); state.deletedIds = new Set(args.deleted_ids || []);
         if (state.mode === "edit") {
@@ -815,10 +1174,27 @@
             [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
           );
           saveDraftState();
+        } else if (state.mode === "option-edit") {
+          const optionDraftId = String(args.option_draft_id || "");
+          const persisted = loadOptionDraft(optionDraftId);
+          state.optionDraftId = optionDraftId;
+          state.optionDirty = persisted.dirty;
+          state.optionDirtyReported = false;
+          state.rows = persisted.rows.length
+            ? JSON.parse(JSON.stringify(persisted.rows))
+            : JSON.parse(JSON.stringify(args.rows || []));
+          const appendRow = args.option_append_row || {};
+          if (appendRow.__行ID && !state.rows.some(row => row.__行ID === appendRow.__行ID)) {
+            state.rows.push(JSON.parse(JSON.stringify(appendRow)));
+            state.optionDirty = true;
+            saveOptionDraft();
+          }
         } else {
           // 只读表格、操作栏和年度汇总表不得读取或清除整表编辑草稿。
           state.draftRows = new Map(); state.draftSessionId = ""; state.deletedIds = new Set();
-          state.rows = JSON.parse(JSON.stringify(args.rows || []));
+          state.rows = state.mode === "view"
+            ? filterDraftRows(JSON.parse(JSON.stringify(args.rows || [])))
+            : JSON.parse(JSON.stringify(args.rows || []));
         }
         state.active = null; state.anchor = null; state.range = null; state.confirmingDelete = false; state.confirmingOptionSave = false; state.batchEditing = false; state.batchValues = null;
         if (args.mode === "view") persistSelection();
@@ -827,12 +1203,48 @@
         state.rows = filterDraftRows(
           [...state.draftRows.values()].map(row => JSON.parse(JSON.stringify(row)))
         );
+      } else if (state.mode === "option-edit") {
+        const optionDraftId = String(args.option_draft_id || "");
+        if (state.optionDraftId !== optionDraftId) {
+          const persisted = loadOptionDraft(optionDraftId);
+          state.optionDraftId = optionDraftId;
+          state.optionDirty = persisted.dirty;
+          state.optionDirtyReported = false;
+          state.rows = persisted.rows.length
+            ? JSON.parse(JSON.stringify(persisted.rows))
+            : JSON.parse(JSON.stringify(args.rows || []));
+        }
+        const appendRow = args.option_append_row || {};
+        if (appendRow.__行ID && !state.rows.some(row => row.__行ID === appendRow.__行ID)) {
+          state.rows.push(JSON.parse(JSON.stringify(appendRow)));
+          state.optionDirty = true;
+          saveOptionDraft();
+        }
       } else {
-        state.rows = JSON.parse(JSON.stringify(args.rows || []));
+        state.rows = state.mode === "view"
+          ? filterDraftRows(JSON.parse(JSON.stringify(args.rows || [])))
+          : JSON.parse(JSON.stringify(args.rows || []));
       }
       const signature = layoutSignature();
       if (state.layoutSignature !== signature) { state.layout = loadLayout(); state.layoutSignature = signature; }
       state.dateMode = state.dateMode || loadDateMode(); render();
+      if (state.mode === "option-edit" && state.optionDirty && !state.optionDirtyReported) {
+        state.optionDirtyReported = true;
+        setTimeout(() => setValue({ action: "option_dirty" }), 0);
+      }
+      const optionSubmitToken = String(args.option_submit_token || "");
+      if (state.mode === "option-edit" && optionSubmitToken && optionSubmitToken !== state.lastOptionSubmitToken) {
+        state.lastOptionSubmitToken = optionSubmitToken;
+        setTimeout(() => {
+          if (state.rows.some(row => row["删除"])) {
+            state.confirmingOptionSave = true;
+            render();
+          } else {
+            saveOptionDraft();
+            setValue({ action: "save", rows: state.rows });
+          }
+        }, 0);
+      }
     });
     message("streamlit:componentReady", { apiVersion: 1 });
   </script>
